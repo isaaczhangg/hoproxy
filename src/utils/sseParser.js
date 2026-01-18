@@ -63,9 +63,8 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
             return;
           }
 
-          // DIAGNOSTIC: Log the first message_start event to verify model name
           if (evt.event === 'message_start') {
-            log.info('SSE DIAGNOSTIC - message_start sent to client', {
+            log.debug('Streaming message_start', {
               model: evt.data?.message?.model,
               messageId: evt.data?.message?.id
             });

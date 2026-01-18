@@ -31,18 +31,22 @@ function getLogLevel() {
   if (envLevel && LOG_LEVELS[envLevel] !== undefined) {
     return LOG_LEVELS[envLevel];
   }
-  // HOPGPT_DEBUG=true enables debug level
-  if (process.env.HOPGPT_DEBUG === 'true') {
+
+  const debugEnabled = process.env.HOPGPT_DEBUG === 'true';
+  if (debugEnabled) {
     return LOG_LEVELS.debug;
   }
+
   return LOG_LEVELS.info;
 }
 
 // Check if colors should be used
 function useColors() {
-  if (process.env.NO_COLOR || process.env.HOPGPT_LOG_NO_COLOR === 'true') {
+  const colorsDisabled = process.env.NO_COLOR || process.env.HOPGPT_LOG_NO_COLOR === 'true';
+  if (colorsDisabled) {
     return false;
   }
+
   return process.stdout.isTTY !== false;
 }
 

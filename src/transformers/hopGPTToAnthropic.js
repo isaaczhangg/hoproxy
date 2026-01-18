@@ -53,31 +53,30 @@ const TOOL_TAG_CLOSINGS = {
   'tool_use': ['</tool_use>', '</tool_call>']
 };
 
+// Helper function to parse environment variable as positive integer
+function parsePositiveInt(envVar, defaultValue) {
+  const parsed = Number.parseInt(envVar, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
 const DEFAULT_MAX_TOOL_CALL_BUFFER_SIZE = 1000000;
-const CONFIGURED_TOOL_CALL_BUFFER_SIZE = Number.parseInt(process.env.HOPGPT_TOOL_CALL_BUFFER_SIZE, 10);
-const MAX_TOOL_CALL_BUFFER_SIZE = Number.isFinite(CONFIGURED_TOOL_CALL_BUFFER_SIZE) &&
-  CONFIGURED_TOOL_CALL_BUFFER_SIZE > 0
-  ? CONFIGURED_TOOL_CALL_BUFFER_SIZE
-  : DEFAULT_MAX_TOOL_CALL_BUFFER_SIZE;
+const MAX_TOOL_CALL_BUFFER_SIZE = parsePositiveInt(
+  process.env.HOPGPT_TOOL_CALL_BUFFER_SIZE,
+  DEFAULT_MAX_TOOL_CALL_BUFFER_SIZE
+);
 
 const DEFAULT_TOOL_CALL_BUFFER_WARN_THRESHOLD = 50000;
 const DEFAULT_TOOL_CALL_BUFFER_WARN_STEP = 200000;
-const CONFIGURED_TOOL_CALL_BUFFER_WARN_THRESHOLD = Number.parseInt(
+
+const TOOL_CALL_BUFFER_WARN_THRESHOLD = parsePositiveInt(
   process.env.HOPGPT_TOOL_CALL_BUFFER_WARN_THRESHOLD,
-  10
+  DEFAULT_TOOL_CALL_BUFFER_WARN_THRESHOLD
 );
-const CONFIGURED_TOOL_CALL_BUFFER_WARN_STEP = Number.parseInt(
+
+const TOOL_CALL_BUFFER_WARN_STEP = parsePositiveInt(
   process.env.HOPGPT_TOOL_CALL_BUFFER_WARN_STEP,
-  10
+  DEFAULT_TOOL_CALL_BUFFER_WARN_STEP
 );
-const TOOL_CALL_BUFFER_WARN_THRESHOLD = Number.isFinite(CONFIGURED_TOOL_CALL_BUFFER_WARN_THRESHOLD) &&
-  CONFIGURED_TOOL_CALL_BUFFER_WARN_THRESHOLD > 0
-  ? CONFIGURED_TOOL_CALL_BUFFER_WARN_THRESHOLD
-  : DEFAULT_TOOL_CALL_BUFFER_WARN_THRESHOLD;
-const TOOL_CALL_BUFFER_WARN_STEP = Number.isFinite(CONFIGURED_TOOL_CALL_BUFFER_WARN_STEP) &&
-  CONFIGURED_TOOL_CALL_BUFFER_WARN_STEP > 0
-  ? CONFIGURED_TOOL_CALL_BUFFER_WARN_STEP
-  : DEFAULT_TOOL_CALL_BUFFER_WARN_STEP;
 
 const VALID_JSON_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']);
 const TOOL_INSTRUCTION_MARKERS = [
@@ -1930,7 +1929,6 @@ export class HopGPTToAnthropicTransformer {
         return events.length > 0 ? events : null;
       }
 
-      // Debug: Log incoming text for tool call detection
       if (process.env.HOPGPT_DEBUG === 'true') {
         const hasToolCallTag = sanitizedText.includes('<tool_call') ||
                                includesAny(sanitizedText, FUNCTION_CALLS_TAGS) ||
@@ -1938,7 +1936,7 @@ export class HopGPTToAnthropicTransformer {
                                sanitizedText.includes(TOOL_USE_START_TAG) ||
                                includesAny(sanitizedText, INVOKE_TAGS);
         if (hasToolCallTag) {
-          console.log('[Transform] Text contains tool call XML:', sanitizedText.slice(0, 200));
+          log.debug('Text contains tool call XML', { preview: sanitizedText.slice(0, 200) });
         }
       }
 
@@ -1971,10 +1969,10 @@ export class HopGPTToAnthropicTransformer {
       if (process.env.HOPGPT_DEBUG === 'true') {
         const toolCalls = segments.filter(s => s.type === 'tool_call');
         if (toolCalls.length > 0) {
-          console.log(`[Transform] Parsed ${toolCalls.length} tool calls from text`);
-          for (const tc of toolCalls) {
-            console.log('[Transform] Tool call:', tc.toolCall?.toolName);
-          }
+          log.debug('Parsed tool calls from text', {
+            count: toolCalls.length,
+            tools: toolCalls.map(tc => tc.toolCall?.toolName)
+          });
         }
       }
 

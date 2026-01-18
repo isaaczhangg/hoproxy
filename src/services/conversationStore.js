@@ -16,10 +16,9 @@ function normalizeId(value) {
 
 function getTtlMs() {
   const configured = Number.parseInt(process.env.CONVERSATION_TTL_MS, 10);
-  if (Number.isFinite(configured) && configured > 0) {
-    return configured;
-  }
-  return DEFAULT_TTL_MS;
+  const isValidTtl = Number.isFinite(configured) && configured > 0;
+
+  return isValidTtl ? configured : DEFAULT_TTL_MS;
 }
 
 function cleanupExpiredSessions(now = Date.now()) {
@@ -63,15 +62,21 @@ export function resolveSessionId(req, requestBody) {
 }
 
 export function shouldResetConversation(req, requestBody) {
+  // Check header for reset flag
   const headerReset = normalizeId(req.get('x-conversation-reset'));
   if (headerReset && headerReset.toLowerCase() === 'true') {
     return true;
   }
 
+  // Check metadata for various reset flags
   const metadata = requestBody?.metadata;
-  return metadata?.conversation_reset === true ||
-    metadata?.reset === true ||
-    metadata?.new_conversation === true;
+  if (!metadata) {
+    return false;
+  }
+
+  return metadata.conversation_reset === true ||
+    metadata.reset === true ||
+    metadata.new_conversation === true;
 }
 
 export function getConversationState(sessionId) {

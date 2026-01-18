@@ -370,6 +370,7 @@ Extraction-only:
 | `/v1/models/:model_id` | GET | Fetch a specific model |
 | `/refresh-token` | POST | Refresh HopGPT bearer token using refresh cookie |
 | `/token-status` | GET | Check token expiry status and time remaining |
+| `/token-debug` | GET | Detailed token diagnostics (compares memory vs .env) |
 | `/health` | GET | Health check |
 
 ## Conversation State

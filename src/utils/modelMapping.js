@@ -49,7 +49,10 @@ function stripProviderPrefix(modelName) {
   }
 
   const parts = trimmed.split('/').filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : trimmed;
+  if (parts.length > 0) {
+    return parts[parts.length - 1];
+  }
+  return trimmed;
 }
 
 function addModelVariants(variants, name) {

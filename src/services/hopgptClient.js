@@ -47,9 +47,7 @@ export class HopGPTClient {
     this.streamingTransport = (config.streamingTransport ||
       process.env.HOPGPT_STREAMING_TRANSPORT ||
       'fetch').toLowerCase();
-    this.refreshPromise = null;  // Promise-based mutex for concurrent refresh
-    // Proactive refresh buffer: refresh this many seconds before expiration
-    // Increased from 60 to 300 (5 minutes) to handle network latency and concurrent requests
+    this.refreshPromise = null;
     this.proactiveRefreshBufferSec = config.proactiveRefreshBufferSec ?? 300;
     
     // Auto-persist credentials to .env after refresh
@@ -75,9 +73,12 @@ export class HopGPTClient {
       return null;
     }
 
-    const retryAfter = typeof headers.get === 'function'
-      ? headers.get('retry-after')
-      : headers['retry-after'] || headers['Retry-After'];
+    let retryAfter;
+    if (typeof headers.get === 'function') {
+      retryAfter = headers.get('retry-after');
+    } else {
+      retryAfter = headers['retry-after'] || headers['Retry-After'];
+    }
     if (!retryAfter) {
       return null;
     }
@@ -250,7 +251,6 @@ export class HopGPTClient {
   /**
    * Persist current credentials to .env file
    * Updates only the token-related variables, preserving other settings
-   * FIX P1 #4: Uses in-process mutex to prevent race conditions
    */
   async persistCredentials() {
     if (!this.autoPersist) {
@@ -258,7 +258,6 @@ export class HopGPTClient {
       return;
     }
 
-    // FIX P1 #4: In-process mutex - wait for any pending write to complete
     if (envWritePromise) {
       log.debug('Waiting for pending .env write to complete');
       await envWritePromise;
@@ -423,8 +422,6 @@ export class HopGPTClient {
    * @throws {NetworkError} When network error occurs
    */
   async refreshTokens() {
-    // FIX P0 #1: Race condition fix - check for existing promise first
-    // If a refresh is already in progress, all concurrent callers await the same promise
     if (this.refreshPromise) {
       log.info('Waiting for ongoing token refresh');
       return this.refreshPromise;
@@ -435,9 +432,6 @@ export class HopGPTClient {
       return false;
     }
 
-    // FIX P0 #1: Synchronously create and assign the promise BEFORE any await
-    // This eliminates the TOCTOU race window - the promise is set immediately
-    // and any concurrent calls will see it and await it
     const refreshOperation = (async () => {
       try {
         return await this._doRefreshTokens();
@@ -506,7 +500,6 @@ export class HopGPTClient {
         browserType
       });
 
-      // FIX P1 #5: Error classification for different failure types
       if (!response.ok) {
         const errorText = response.body || '';
         log.error('Token refresh failed', { status: response.status, statusText: response.statusText });
@@ -525,21 +518,19 @@ export class HopGPTClient {
       // Parse the response to get the new bearer token
       const data = await response.json();
 
-      // FIX P0 #2: Return false when token is missing instead of falling through to return true
       if (data.token) {
         this.bearerToken = data.token;
         const newTokenInfo = this._getTokenExpiryInfo(data.token);
         log.info('Bearer token refreshed', { expiresIn: newTokenInfo ? `${newTokenInfo.expiresInSeconds}s` : 'unknown' });
       } else {
         log.error('Refresh response did not contain token');
-        return false;  // FIX: Explicit failure when no token received
+        return false;
       }
 
       // Update cookies from Set-Cookie headers (includes rotated refresh token)
       const oldRefreshToken = this.cookies.refreshToken;
       const oldRefreshMasked = maskToken(oldRefreshToken);
       
-      // Debug: Log raw Set-Cookie headers
       const setCookieHeaders = response.headers['set-cookie'] || response.headers['Set-Cookie'];
       if (setCookieHeaders) {
         const headerArray = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
@@ -576,8 +567,7 @@ export class HopGPTClient {
 
       return true;
     } catch (error) {
-      // FIX P1 #5: Re-throw classified errors, wrap others as NetworkError
-      if (error instanceof RefreshTokenExpiredError || 
+      if (error instanceof RefreshTokenExpiredError ||
           error instanceof CloudflareBlockedError ||
           error instanceof NetworkError) {
         throw error;
@@ -662,8 +652,6 @@ export class HopGPTClient {
     requestOptions = {},
     retryState = { isAuthRetry: false, rateLimitAttempt: 0 }
   ) {
-    // FIX P0 #3: Check return value of proactive token refresh
-    // Proactively refresh token if needed (before making the request)
     if (!retryState.isAuthRetry) {
       const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
       if (tokenInfo && tokenInfo.expiresInSeconds <= this.proactiveRefreshBufferSec + 60) {

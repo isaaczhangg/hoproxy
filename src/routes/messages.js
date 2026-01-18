@@ -128,18 +128,12 @@ router.post('/messages', async (req, res) => {
       anthropicRequest.metadata?.mcp_passthrough === true ||
       anthropicRequest.metadata?.mcpPassthrough === true;
 
-    const toolNames = Array.isArray(anthropicRequest.tools)
-      ? anthropicRequest.tools
-        .map((tool) => tool?.name || tool?.function?.name || tool?.custom?.name)
-        .filter((name) => typeof name === 'string' && name.trim().length > 0)
-        .map((name) => name.trim())
-      : [];
+    const toolNames = extractToolNames(anthropicRequest.tools);
     const hasTools = toolNames.length > 0;
     const toolChoiceConfig = getToolChoiceConfig(anthropicRequest.tool_choice);
-    const stopOnToolUse = !mcpPassthrough &&
-      hasTools &&
-      toolChoiceConfig.allowTools !== false &&
-      toolChoiceConfig.disableParallelToolUse;
+
+    // Determine if we should stop on tool use
+    const stopOnToolUse = shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig);
 
     log.debug('Processing request', {
       sessionId: sessionId.slice(0, 8) + '...',
@@ -166,13 +160,11 @@ router.post('/messages', async (req, res) => {
     // Echo the requested model in responses to avoid client-side model validation errors.
     const responseModel = anthropicRequest.model;
 
-    // DIAGNOSTIC: Log exact model names at each stage
-    log.debug('MODEL DIAGNOSTIC', {
-      requestedModel: anthropicRequest.model,
-      strippedModel,
-      mappedHopgpt: modelMapping.hopgptModel,
-      mappedResponse: modelMapping.responseModel,
-      actualResponseModel: responseModel
+    log.debug('Model resolution', {
+      requested: anthropicRequest.model,
+      stripped: strippedModel,
+      hopgpt: modelMapping.hopgptModel,
+      response: responseModel
     });
 
     const transformer = new HopGPTToAnthropicTransformer(responseModel, transformerOptions);
@@ -409,6 +401,45 @@ function handleError(error, res) {
 
 export default router;
 
+/**
+ * Extract tool names from tools array
+ * @param {Array} tools - Array of tool definitions
+ * @returns {Array<string>} Array of tool names
+ */
+function extractToolNames(tools) {
+  if (!Array.isArray(tools)) {
+    return [];
+  }
+
+  return tools
+    .map((tool) => tool?.name || tool?.function?.name || tool?.custom?.name)
+    .filter((name) => typeof name === 'string' && name.trim().length > 0)
+    .map((name) => name.trim());
+}
+
+/**
+ * Determine if we should stop on tool use
+ * @param {boolean} mcpPassthrough - Whether MCP passthrough is enabled
+ * @param {boolean} hasTools - Whether tools are present
+ * @param {object} toolChoiceConfig - Tool choice configuration
+ * @returns {boolean} Whether to stop on tool use
+ */
+function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
+  if (mcpPassthrough) {
+    return false;
+  }
+
+  if (!hasTools) {
+    return false;
+  }
+
+  if (toolChoiceConfig.allowTools === false) {
+    return false;
+  }
+
+  return toolChoiceConfig.disableParallelToolUse;
+}
+
 function mapErrorResponse({ statusCode, message, responseBody, fallbackType, retryAfterMs }) {
   const errorText = extractErrorText(message, responseBody);
   const errorTextLower = errorText.toLowerCase();
@@ -438,27 +469,32 @@ function mapErrorResponse({ statusCode, message, responseBody, fallbackType, ret
 }
 
 function mapAuthErrorResponse(error) {
-  let statusCode = 500;
-  let errorType = 'api_error';
-
-  if (error instanceof RefreshTokenExpiredError || error instanceof TokenRefreshError) {
-    statusCode = 401;
-    errorType = 'authentication_error';
-  } else if (error instanceof CloudflareBlockedError) {
-    statusCode = 503;
-    errorType = 'api_error';
-  } else if (error instanceof NetworkError) {
-    statusCode = 502;
-    errorType = 'api_error';
-  }
+  // Map error types to status codes and error types
+  const errorMapping = getAuthErrorMapping(error);
 
   return mapErrorResponse({
-    statusCode,
+    statusCode: errorMapping.statusCode,
     message: error.message,
     responseBody: '',
-    fallbackType: errorType,
+    fallbackType: errorMapping.errorType,
     retryAfterMs: null
   });
+}
+
+function getAuthErrorMapping(error) {
+  if (error instanceof RefreshTokenExpiredError || error instanceof TokenRefreshError) {
+    return { statusCode: 401, errorType: 'authentication_error' };
+  }
+
+  if (error instanceof CloudflareBlockedError) {
+    return { statusCode: 503, errorType: 'api_error' };
+  }
+
+  if (error instanceof NetworkError) {
+    return { statusCode: 502, errorType: 'api_error' };
+  }
+
+  return { statusCode: 500, errorType: 'api_error' };
 }
 
 function buildErrorResponse(statusCode, errorType, message, retryAfterSeconds) {

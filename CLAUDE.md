@@ -34,11 +34,10 @@ Anthropic SDK Client
         ▼
 ┌─────────────────────────────────────────┐
 │  Routes (src/routes/)                   │
-│  • index.js - Route wiring, /health     │
 │  • messages.js - /v1/messages           │
 │  • models.js - /v1/models, /v1/models/:id │
 │  • refreshToken.js - /refresh-token,   │
-│    /token-status                        │
+│    /token-status, /token-debug          │
 └─────────────────┬───────────────────────┘
                   ▼
 ┌─────────────────────────────────────────┐

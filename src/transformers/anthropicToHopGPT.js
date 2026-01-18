@@ -9,8 +9,11 @@ function resolveDisableParallelToolUse(toolChoice) {
   if (!toolChoice || typeof toolChoice !== "object") {
     return false;
   }
-  return toolChoice.disable_parallel_tool_use === true ||
-    toolChoice.disableParallelToolUse === true;
+
+  const hasSnakeCaseFlag = toolChoice.disable_parallel_tool_use === true;
+  const hasCamelCaseFlag = toolChoice.disableParallelToolUse === true;
+
+  return hasSnakeCaseFlag || hasCamelCaseFlag;
 }
 
 export function getToolChoiceConfig(toolChoice) {
@@ -434,7 +437,7 @@ function truncateSchemaDescription(value) {
   if (typeof value !== "string") {
     return "";
   }
-  return value.length > 120 ? `${value.slice(0, 120)}...` : value;
+  return value.length > 500 ? `${value.slice(0, 500)}...` : value;
 }
 
 function formatSchemaDetailLines(schema, depth = 0) {

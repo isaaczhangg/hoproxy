@@ -4,6 +4,9 @@
  * by mimicking real browser TLS/JA3 fingerprints
  */
 import { Session, initTLS, destroyTLS } from 'node-tls-client';
+import { loggers } from '../utils/logger.js';
+
+const log = loggers.tls;
 
 // Track initialization state
 let isInitialized = false;
@@ -34,7 +37,7 @@ export async function ensureTLSInitialized() {
   initPromise = initTLS();
   await initPromise;
   isInitialized = true;
-  console.log('[TLS Client] Initialized with browser fingerprint support');
+  log.info('TLS client initialized');
 }
 
 /**
@@ -46,7 +49,7 @@ export async function shutdownTLS() {
     await destroyTLS();
     isInitialized = false;
     initPromise = null;
-    console.log('[TLS Client] Shutdown complete');
+    log.info('TLS client shutdown complete');
   }
 }
 
@@ -138,8 +141,7 @@ export async function tlsFetch(options) {
     try {
       await session.close();
     } catch (closeError) {
-      // Ignore close errors - session may already be closed
-      console.warn('[TLS Client] Session close warning:', closeError.message);
+      log.debug('Session close warning', { error: closeError.message });
     }
   }
 }
@@ -164,9 +166,8 @@ function getStatusText(status) {
 }
 
 
-// Handle Ctrl+C (SIGINT) explicitly
 process.on('SIGINT', async () => {
-  console.log('\n[TLS Client] Received SIGINT. Shutting down...');
+  log.info('Received SIGINT, shutting down');
   await shutdownTLS();
   process.exit(0);
 });
