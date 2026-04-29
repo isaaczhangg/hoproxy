@@ -375,6 +375,7 @@ export class HopGPTClient {
 
     const expiryInfo = this._getTokenExpiryInfo(this.bearerToken);
     if (!expiryInfo) {
+      // No parseable expiry (missing bearer, non-JWT, or malformed) — refresh proactively.
       return true;
     }
 
