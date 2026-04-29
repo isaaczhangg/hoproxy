@@ -139,13 +139,43 @@ export async function extractCredentials(options = {}) {
     };
 
     if (!credentials.cookies.openid_user_id) {
-      const jhCookieNames = cookies
-        .filter((c) => c.domain && c.domain.endsWith('jh.edu'))
-        .map((c) => `${c.name}@${c.domain}`)
-        .join(', ') || '(none)';
+      // Diagnostic: dump every cookie we can see, across every domain, and also
+      // try the page-scoped API as a fallback in case browser.cookies() missed
+      // something set on a different origin during SSO redirects.
+      const allByDomain = {};
+      for (const c of cookies) {
+        const d = c.domain || '<no-domain>';
+        if (!allByDomain[d]) allByDomain[d] = [];
+        allByDomain[d].push(c.name);
+      }
+      console.error('\nDiagnostic — all cookies visible to browser.cookies():');
+      for (const [d, names] of Object.entries(allByDomain).sort()) {
+        console.error(`  ${d}: ${names.sort().join(', ')}`);
+      }
+
+      // Fallback: try page.cookies() with several URL candidates (OIDC cookies may
+      // be scoped to a login subdomain).
+      const urlCandidates = [
+        HOPGPT_URL,
+        'https://login.jh.edu',
+        'https://auth.jh.edu',
+        'https://my.jh.edu',
+        'https://ai.jh.edu'
+      ];
+      console.error('\nDiagnostic — page.cookies() per candidate URL:');
+      for (const u of urlCandidates) {
+        try {
+          const scoped = await page.cookies(u);
+          const names = scoped.map((c) => c.name).sort().join(', ') || '(none)';
+          console.error(`  ${u}: ${names}`);
+        } catch (e) {
+          console.error(`  ${u}: error — ${e.message}`);
+        }
+      }
+
       throw new Error(
         `Logged in but openid_user_id cookie (the refresh credential) was not set. ` +
-        `Cookies on *.jh.edu at detection: ${jhCookieNames}. ` +
+        `See diagnostic above for visible cookies. ` +
         `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`
       );
     }
