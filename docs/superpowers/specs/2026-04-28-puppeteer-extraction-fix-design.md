@@ -39,9 +39,16 @@ After `/api/auth/refresh`, all subsequent `/api/*` requests carry `Authorization
 
 ### Detection signal
 
-Wait for the **first successful response (status 2xx or 304) from `POST https://chat.ai.jh.edu/api/auth/refresh`**. The HAR shows this is the canonical "the app is authenticated and running" signal: it fires once per session after SSO completes, and the response delivers the bearer token plus rotated session cookies. Waiting for this specific call is more robust than matching URL patterns through Shibboleth/Duo, and more specific than "any 2xx on `/api/*`" which could fire during partially-authenticated edge cases.
+Accept **either** of two signals, whichever fires first:
 
-Fallback signal (in case LibreChat's startup sequence changes): if no `/api/auth/refresh` call is seen within 30 s after we first observe the page on `chat.ai.jh.edu` post-SSO, fall back to "any 2xx response on `/api/*` that also carries a `Cookie: connect.sid=...` header." This fallback exists so the extractor doesn't break if HopGPT's client-side auth code is restructured.
+1. **Primary:** successful response (2xx or 304) from `POST https://chat.ai.jh.edu/api/auth/refresh`. The HAR shows this fires on fresh login.
+2. **Co-primary:** successful response (2xx or 304) from `GET https://chat.ai.jh.edu/api/config` **where the request carried `Cookie: connect.sid=...`**. The HAR shows `/api/config` fires on every page load regardless of whether `/api/auth/refresh` runs, which covers the case of "user already had a valid bearer cached" — the most likely real-world scenario.
+
+Treating both as primary removes the 30-second wait that a primary-then-fallback design would impose.
+
+**Final fallback:** if neither signal fires within the overall timeout (default 300 s) but `page.cookies()` already shows `connect.sid`, treat that as success and harvest. This covers unanticipated changes to LibreChat's startup flow.
+
+The extractor does NOT try to detect login by URL pattern. SSO flows go through Shibboleth and/or Duo, and the intermediate hops are not stable.
 
 ### New extraction flow
 
@@ -58,18 +65,26 @@ extractCredentials(options)
   │     - browser disconnected → throw "browser closed before login"
   ├─ once logged in:
   │     - harvest cookies via page.cookies('https://chat.ai.jh.edu'):
-  │         connect.sid         (REQUIRED)
+  │         connect.sid         (REQUIRED — fails loudly if absent)
   │         cf_clearance        (recommended)
   │         __cf_bm             (optional — only set by Cloudflare bot-mgmt)
-  │         token_provider      (optional — defaults to 'openid' or 'librechat')
-  │         openid_user_id      (optional — carries OIDC subject)
+  │         token_provider      (optional — the server rotates this on /api/auth/refresh;
+  │                              current value is 'openid' per HAR, though HoProxy defaults to 'librechat')
   │     - capture browser.userAgent()
-  │     - if at least one prior /api/auth/refresh or /api/* response was seen,
-  │       and we intercepted a bearer from an outgoing Authorization header,
+  │     - if we intercepted a bearer from an outgoing Authorization header,
   │       save it as HOPGPT_BEARER_TOKEN (optional; HoProxy will mint one on demand)
+
+  openid_user_id is NOT harvested. It's set by HopGPT on response but is OIDC subject
+  metadata — the server does not require it to be echoed back in subsequent requests
+  (the HAR shows subsequent /api/* calls carry it only because the browser cookie jar
+  re-attaches it automatically). HoProxy's server code does not read or forward it.
   ├─ validate: connect.sid MUST be present; fail loudly if not
   ├─ generateEnvContent + writeEnvFile (pure helpers, rewritten to drop refresh-token line)
-  └─ finally: always await browser.close()
+
+  ENTIRE flow is wrapped in try { ... } finally { await browser.close().catch(noop) }
+  so the browser is closed on every exit path: success, timeout, thrown error, manual
+  Ctrl+C. The current code only closes on success and on timeout-throw, which leaks
+  Chromium processes on any other exception.
 ```
 
 ### Files to change
@@ -100,7 +115,6 @@ Extracted:
   cf_clearance:    yes
   __cf_bm:         yes
   token_provider:  openid
-  openid_user_id:  yes
   User Agent:      yes
 
 Closing browser.
@@ -131,18 +145,20 @@ The function name `refreshTokens()` itself describes what it does (refresh the *
 | `src/services/hopgptClient.js:43` | Remove `refreshToken: ... process.env.HOPGPT_COOKIE_REFRESH_TOKEN` from the `this.cookies` initializer. |
 | `src/services/hopgptClient.js:192-194` | Remove the `cookies.push('refreshToken=...')` branch from `buildCookieHeader()`. |
 | `src/services/hopgptClient.js:238-239` | Remove the `if (name === 'refreshToken')` branch in `updateCookiesFromSetCookie()` (or whatever the setter is named). Do **not** remove similar handling for `connect.sid`. |
-| `src/services/hopgptClient.js:266-347` | The `autoPersistEnvFile` logic currently writes `HOPGPT_COOKIE_REFRESH_TOKEN`. Rewrite to write `HOPGPT_COOKIE_CONNECT_SID` on rotation. Drop the verify-against-`.env` bit for `refreshToken`. |
-| `src/services/hopgptClient.js:379` | `if (!this.autoRefresh || !this.cookies.refreshToken)` → `if (!this.autoRefresh || !this.cookies.connect_sid)`. |
+| `src/services/hopgptClient.js:266-347` | The auto-persist-to-`.env` logic currently writes `HOPGPT_COOKIE_REFRESH_TOKEN`. Rewrite to write `HOPGPT_COOKIE_CONNECT_SID` whenever `connect.sid` is rotated by a response's `Set-Cookie` header. Drop the verify-against-`.env` bit for `refreshToken`; add an equivalent for `connect.sid`. |
+| `src/services/hopgptClient.js:378-391` (`_shouldProactivelyRefresh()`) | Change the guard from "do we have a refresh token" to "do we have a session cookie." `connect.sid` is the correct replacement. Crucially: rename any local variables or log fields that imply JWT semantics (e.g., `refreshTokenInfo`, `refreshTokenExpiry`) — session cookies have no parseable expiry, and those names would be misleading. |
 | `src/services/hopgptClient.js:430` | `if (!this.cookies.refreshToken) { log.error('No refresh token available'); return false; }` → `if (!this.cookies.connect_sid) { log.error('No session cookie (connect.sid) available'); return false; }`. |
-| `src/services/hopgptClient.js:454-465, 531-556` | Remove all the `_getTokenExpiryInfo(this.cookies.refreshToken)` diagnostic calls. `connect.sid` is a session key, not a JWT — it does not have a parseable expiry. Replace with a generic "session present" boolean in logs. |
-| `src/services/hopgptClient.js:846-864` | The preflight-missing-credentials check currently requires `refreshToken`. Change to require `connect.sid`. |
+| `src/services/hopgptClient.js:454-465, 531-556` | Remove all `_getTokenExpiryInfo(this.cookies.refreshToken)` diagnostic calls and the associated log fields (`refreshTokenExpiry`, `refreshTokenMasked`, etc.). Session cookies have no parseable expiry — the existing code's attempt to treat the refresh token as a JWT is dead even today (it just silently returns null). Replace with a generic "session present" boolean (`sessionPresent: !!this.cookies.connect_sid`) and a masked session ID where we previously masked the refresh token. |
+| `src/services/hopgptClient.js:780` | `refreshed = await this.refreshTokens()` in the 401/403 retry path — stays as-is; the function name is correct (it refreshes the bearer). Guard at the top of `refreshTokens()` already updated by the 430 change. |
+| `src/services/hopgptClient.js:841-868` (`validateAuth()`) | Preflight check currently adds `HOPGPT_COOKIE_REFRESH_TOKEN` to the `missing` list when absent. Change to add `HOPGPT_COOKIE_CONNECT_SID`. The warning-vs-error level shouldn't change: missing `connect.sid` is a hard error (can't authenticate), missing Cloudflare cookies remain warnings. |
+| `src/services/hopgptClient.js:228-248` (`updateCookiesFromSetCookie` or equivalent) | Keep the `connect.sid` parsing path (it already exists). Remove the `if (name === 'refreshToken')` branch entirely. This is where rotated cookies from `/api/auth/refresh` get saved — we need `connect.sid` rotation support, not `refreshToken`. |
 | `src/index.js:50-85` | `client.cookies?.refreshToken` diagnostic at startup. Replace with `client.cookies?.connect_sid`. Stop trying to get JWT expiry from a non-JWT. |
 | `src/routes/refreshToken.js` | Rename is out of scope; keep file name. Internally: update `client.cookies?.refreshToken` checks to `client.cookies?.connect_sid`. `/token-status` response shape changes: drop `refreshToken.expiresAt` (cannot compute for non-JWT) and replace with a simple `session: { present: true/false }` field. Update `/token-debug` similarly. |
-| `README.md:54, 346, 412` | Remove `HOPGPT_COOKIE_REFRESH_TOKEN` from the minimum-required section. Replace with `HOPGPT_COOKIE_CONNECT_SID`. Keep `HOPGPT_COOKIE_OPENID_USER_ID` and `HOPGPT_COOKIE_TOKEN_PROVIDER` as optional. |
+| `README.md:54, 346, 412` | Remove `HOPGPT_COOKIE_REFRESH_TOKEN` from the minimum-required section. Replace with `HOPGPT_COOKIE_CONNECT_SID` as the sole required cookie. Keep `HOPGPT_COOKIE_TOKEN_PROVIDER` as optional. Do NOT add `HOPGPT_COOKIE_OPENID_USER_ID` — the server code does not forward it. |
 | `test/services/hopgptClient.test.js` | Update fixtures: every `refreshToken: 'refresh-token'` in `new HopGPTClient({...})` becomes `connectSid: 'session-id'`. The `set-cookie: refreshToken=...` fixtures in `/api/auth/refresh` mocks become `set-cookie: connect.sid=...`, because that's what the server actually rotates. |
 | `test/routes/refreshToken.test.js` | Same: fixtures now use `cookies.connect_sid`. |
 
-### Token status endpoint (`/token-status`)
+### Token status endpoint (`/token-status`) — BREAKING CHANGE
 
 Current shape is JWT-centric (`expiresAt`, `expiresInSeconds`). After the change, for the session cookie, those fields are not meaningful. New shape:
 
@@ -160,9 +176,11 @@ Current shape is JWT-centric (`expiresAt`, `expiresInSeconds`). After the change
 
 The `refreshToken: { ... }` object is removed.
 
-### Debug endpoint (`/token-debug`)
+**This is a breaking change to the response shape.** HoProxy's README lists `/token-status` and `/token-debug` as existing endpoints but does not document their JSON shape as a stable contract, so no external consumer should depend on it. Call this out in the PR description and in a one-line migration note in the README: "if you depended on the `refreshToken` field of `/token-status`, note that HopGPT does not actually use a refresh-token cookie; use `session.present` instead."
 
-Currently compares memory vs `.env` for both bearer and refresh token. After the change: compare bearer (unchanged), and for the session cookie, compare `memoryConnectSid === envConnectSid` (masked). Drop the entire `refreshToken:` branch.
+### Debug endpoint (`/token-debug`) — BREAKING CHANGE
+
+Currently compares memory vs `.env` for both bearer and refresh token. After the change: compare bearer (unchanged), and for the session cookie, compare `memoryConnectSid === envConnectSid` (masked). Drop the entire `refreshToken:` branch. Same breaking-change note as `/token-status`.
 
 ## Part 3 — opencode Config
 
@@ -198,14 +216,31 @@ Edit `~/.config/opencode/opencode.json` (global scope). The implementation **pre
 
 ### Unit tests to update
 
-- `test/services/hopgptClient.test.js`:
-  - Every test constructor that sets `refreshToken: '...'` → `connectSid: '...'`.
-  - Mock `/api/auth/refresh` responses that set `refreshToken=...` → `connect.sid=...`. (This matches the HAR capture.)
-  - The test `refreshTokens() returns false when no refresh token` → rename to `returns false when no session cookie`; assert the new log message.
-- `test/routes/refreshToken.test.js`:
-  - Fixture clients use `cookies: { connect_sid: 'session-id' }` instead of `refreshToken`.
-  - Assertions on `/token-status` response shape update to the new `session: { present: ... }` field.
-- Add tests for `extractCredentials` pure helpers: `generateEnvContent` covers "with bearer", "without bearer", "minimum required" (just `connect.sid`), and "all cookies". The Puppeteer path is tested manually.
+**`test/services/hopgptClient.test.js` — comprehensive update required across all test groups:**
+
+- Constructors: every `new HopGPTClient({ ..., refreshToken: '...' })` → `connectSid: '...'`.
+- Cookie-parsing tests (including the JWT-with-`=` edge case at lines 90–114): `set-cookie: refreshToken=...` → `set-cookie: connect.sid=...`. Assert `client.cookies.connect_sid` updates.
+- Rate-limit / retry refresh mocks (lines 142–268): update `refreshToken=new-refresh` fixtures to `connect.sid=new-session`. Assertions that read `client.cookies.refreshToken` → `client.cookies.connect_sid`.
+- Refresh error-handling tests (lines 298–434): `refreshToken: 'valid-refresh'` / `'expired-refresh'` / `'invalid-refresh'` → `connectSid: 'valid-session'` / `'expired-session'` / `'invalid-session'`. The semantic meaning of "expired" becomes "server rejects with 401/403," which is tested via response mocking, not by JWT decoding — existing test structure still works.
+- Concurrent-refresh mutex test (line 403): keep the test; update fixture values.
+- The test titled `refreshTokens() returns false when no refresh token` → rename to `returns false when no session cookie`. Assert the new log message string.
+
+**`test/routes/refreshToken.test.js` — broader update than prior inventory:**
+
+- Fixture clients use `cookies: { connect_sid: 'session-id' }` instead of `refreshToken`.
+- Existing tests only cover `/refresh-token` POST error mapping. Add new tests for:
+  - `/token-status` GET returns the new `{ bearerToken: {...}, session: { present: bool } }` shape; asserts absence of a `refreshToken` top-level field.
+  - `/token-debug` GET returns comparison between memory and `.env` for bearer and session, no `refreshToken` field.
+- Tests of missing-configuration behavior: `'Missing refresh token configuration (HOPGPT_COOKIE_REFRESH_TOKEN)'` error message → `'Missing session cookie (HOPGPT_COOKIE_CONNECT_SID)'`.
+
+**New tests for the extractor's pure helpers:**
+
+- `generateEnvContent` with all cookies present.
+- `generateEnvContent` with only `connect.sid` (minimum viable).
+- `generateEnvContent` with `connect.sid` missing → helper returns null or an error object (caller throws).
+- `writeEnvFile` preserves non-HopGPT lines and does not leave a stale `HOPGPT_COOKIE_REFRESH_TOKEN=...` line if one existed in the prior `.env` — it should be actively removed on rewrite.
+
+The Puppeteer path itself is tested manually.
 
 ### Manual verification plan
 
