@@ -433,4 +433,30 @@ describe('HopGPTClient', () => {
       expect(refreshCallCount).toBe(1);
     });
   });
+
+  describe('buildCookieHeader', () => {
+    it('does NOT emit a refreshToken cookie even if one is somehow set', () => {
+      const client = new HopGPTClient({
+        connectSid: 'sid-value',
+        cfClearance: 'cf-value'
+      });
+      // Attempt to sneak a refreshToken in — it must be ignored.
+      client.cookies.refreshToken = 'should-be-ignored';
+      const header = client.buildCookieHeader();
+      expect(header).toContain('connect.sid=sid-value');
+      expect(header).toContain('cf_clearance=cf-value');
+      expect(header).not.toContain('refreshToken');
+    });
+
+    it('emits only known session + Cloudflare cookies from a clean client', () => {
+      const client = new HopGPTClient({
+        connectSid: 'sid-value',
+        cfClearance: 'cf-value',
+        cfBm: 'bm-value',
+        tokenProvider: 'openid'
+      });
+      const header = client.buildCookieHeader();
+      expect(header).toBe('cf_clearance=cf-value; connect.sid=sid-value; __cf_bm=bm-value; token_provider=openid');
+    });
+  });
 });

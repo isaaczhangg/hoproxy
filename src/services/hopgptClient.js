@@ -40,7 +40,6 @@ export class HopGPTClient {
       cf_clearance: config.cfClearance || process.env.HOPGPT_COOKIE_CF_CLEARANCE,
       connect_sid: config.connectSid || process.env.HOPGPT_COOKIE_CONNECT_SID,
       __cf_bm: config.cfBm || process.env.HOPGPT_COOKIE_CF_BM,
-      refreshToken: config.refreshToken || process.env.HOPGPT_COOKIE_REFRESH_TOKEN,
       token_provider: config.tokenProvider || process.env.HOPGPT_COOKIE_TOKEN_PROVIDER || 'librechat'
     };
     this.autoRefresh = config.autoRefresh !== false;
@@ -188,9 +187,6 @@ export class HopGPTClient {
     }
     if (this.cookies.__cf_bm) {
       cookies.push(`__cf_bm=${this.cookies.__cf_bm}`);
-    }
-    if (this.cookies.refreshToken) {
-      cookies.push(`refreshToken=${this.cookies.refreshToken}`);
     }
     if (this.cookies.token_provider) {
       cookies.push(`token_provider=${this.cookies.token_provider}`);
