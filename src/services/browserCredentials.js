@@ -51,10 +51,12 @@ function isLoginSignal(response) {
     return true;
   }
   if (url.startsWith(HOPGPT_URL + CONFIG_PATH)) {
-    // Accept /api/config as co-primary only if the request carried connect.sid
+    // Accept /api/config as co-primary only if the request carried connect.sid.
+    // Match `connect.sid` as a whole cookie name (start of header or after `; `)
+    // so names like `_connect.sid` or matching values don't false-positive.
     const request = response.request();
     const cookieHeader = request.headers()['cookie'] || '';
-    return cookieHeader.includes('connect.sid=');
+    return /(?:^|;\s*)connect\.sid=/.test(cookieHeader);
   }
   return false;
 }
