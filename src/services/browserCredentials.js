@@ -114,8 +114,16 @@ export async function extractCredentials(options = {}) {
     const outcome = await Promise.race([loginDetected, timeoutPromise, disconnectedPromise]);
     console.log(`Detected authenticated API call (${new URL(outcome.url).pathname}).`);
 
-    // Harvest cookies.
-    const cookies = await page.cookies(HOPGPT_URL);
+    // Give the browser a moment to process Set-Cookie from the triggering response.
+    // When /api/auth/refresh is the signal, connect.sid is being set AS WE DETECT,
+    // and the cookie jar write lags behind the response event by a few ms.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Harvest cookies. Prefer browser.cookies() (modern API, sees every tab's jar);
+    // fall back to page.cookies(url) on older Puppeteer.
+    const cookies = typeof browser.cookies === 'function'
+      ? await browser.cookies()
+      : await page.cookies(HOPGPT_URL);
     const userAgent = await browser.userAgent().catch(() => null);
 
     const credentials = {
@@ -130,7 +138,14 @@ export async function extractCredentials(options = {}) {
     };
 
     if (!credentials.cookies.connect_sid) {
-      throw new Error('Logged in but connect.sid cookie was not set. This shouldn\'t happen — please report.');
+      const jhCookieNames = cookies
+        .filter((c) => c.domain && c.domain.endsWith('jh.edu'))
+        .map((c) => `${c.name}@${c.domain}`)
+        .join(', ') || '(none)';
+      throw new Error(
+        `Logged in but connect.sid cookie was not set. Cookies on *.jh.edu at detection: ${jhCookieNames}. ` +
+        `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`
+      );
     }
 
     const envContent = generateEnvContent(credentials);
