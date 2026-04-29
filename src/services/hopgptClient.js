@@ -224,18 +224,14 @@ export class HopGPTClient {
   _parseCookies(setCookieHeaders) {
     for (const cookieStr of setCookieHeaders) {
       const [cookiePart] = cookieStr.split(';');
-      // Split only on the first '=' to preserve '=' characters in the value
-      // (common in base64-encoded tokens like JWTs)
       const equalsIndex = cookiePart.indexOf('=');
       if (equalsIndex === -1) continue;
       const name = cookiePart.substring(0, equalsIndex);
       const value = cookiePart.substring(equalsIndex + 1);
 
-      if (name === 'refreshToken') {
-        this.cookies.refreshToken = value;
-        log.debug('Refresh token updated');
-      } else if (name === 'connect.sid') {
+      if (name === 'connect.sid') {
         this.cookies.connect_sid = value;
+        log.debug('Session cookie (connect.sid) rotated');
       } else if (name === 'cf_clearance') {
         this.cookies.cf_clearance = value;
       } else if (name === '__cf_bm') {

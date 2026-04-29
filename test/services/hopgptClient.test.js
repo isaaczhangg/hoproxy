@@ -459,4 +459,28 @@ describe('HopGPTClient', () => {
       expect(header).toBe('cf_clearance=cf-value; connect.sid=sid-value; __cf_bm=bm-value; token_provider=openid');
     });
   });
+
+  describe('_parseCookies (rotation from Set-Cookie)', () => {
+    it('rotates connect.sid when server sends a new one', () => {
+      const client = new HopGPTClient({ connectSid: 'old-sid' });
+      client._parseCookies(['connect.sid=new-sid; Path=/; HttpOnly']);
+      expect(client.cookies.connect_sid).toBe('new-sid');
+    });
+
+    it('does NOT set a refreshToken field when server sends refreshToken cookie (field should not exist)', () => {
+      const client = new HopGPTClient({ connectSid: 'sid' });
+      client._parseCookies(['refreshToken=should-be-ignored; Path=/; HttpOnly']);
+      expect(client.cookies.refreshToken).toBeUndefined();
+    });
+
+    it('rotates cf_clearance and __cf_bm', () => {
+      const client = new HopGPTClient({});
+      client._parseCookies([
+        'cf_clearance=cf-new; Path=/',
+        '__cf_bm=bm-new; Path=/'
+      ]);
+      expect(client.cookies.cf_clearance).toBe('cf-new');
+      expect(client.cookies.__cf_bm).toBe('bm-new');
+    });
+  });
 });
