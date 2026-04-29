@@ -40,6 +40,10 @@ export class HopGPTClient {
       cf_clearance: config.cfClearance || process.env.HOPGPT_COOKIE_CF_CLEARANCE,
       connect_sid: config.connectSid || process.env.HOPGPT_COOKIE_CONNECT_SID,
       __cf_bm: config.cfBm || process.env.HOPGPT_COOKIE_CF_BM,
+      // In HopGPT's OIDC config the refresh credential is the `openid_user_id`
+      // cookie (it's a JWT despite the name). Missing it → /api/auth/refresh
+      // returns "Refresh token not provided".
+      openid_user_id: config.openidUserId || process.env.HOPGPT_COOKIE_OPENID_USER_ID,
       token_provider: config.tokenProvider || process.env.HOPGPT_COOKIE_TOKEN_PROVIDER || 'librechat'
     };
     this.autoRefresh = config.autoRefresh !== false;
@@ -191,6 +195,9 @@ export class HopGPTClient {
     if (this.cookies.token_provider) {
       cookies.push(`token_provider=${this.cookies.token_provider}`);
     }
+    if (this.cookies.openid_user_id) {
+      cookies.push(`openid_user_id=${this.cookies.openid_user_id}`);
+    }
 
     return cookies.join('; ');
   }
@@ -233,6 +240,11 @@ export class HopGPTClient {
       if (name === 'connect.sid') {
         this.cookies.connect_sid = value;
         log.debug('Session cookie (connect.sid) rotated');
+      } else if (name === 'openid_user_id') {
+        this.cookies.openid_user_id = value;
+        log.debug('Refresh cookie (openid_user_id) rotated');
+      } else if (name === 'token_provider') {
+        this.cookies.token_provider = value;
       } else if (name === 'cf_clearance') {
         this.cookies.cf_clearance = value;
       } else if (name === '__cf_bm') {
@@ -257,10 +269,12 @@ export class HopGPTClient {
     }
 
     const sessionToSave = this.cookies.connect_sid;
+    const openidIdToSave = this.cookies.openid_user_id;
     const bearerTokenToSave = this.bearerToken;
 
     log.debug('Persisting credentials to .env', {
       sessionMasked: maskToken(sessionToSave),
+      openidIdMasked: maskToken(openidIdToSave),
       bearerTokenMasked: maskToken(bearerTokenToSave)
     });
 
@@ -270,11 +284,12 @@ export class HopGPTClient {
         const preservedLines = [];
 
         // Variables we will (re-)write on persist.
-        // Note: HOPGPT_COOKIE_REFRESH_TOKEN is included here ONLY so that any
-        // stale line from pre-fix .env files gets stripped on next persist.
+        // HOPGPT_COOKIE_REFRESH_TOKEN is kept in this list ONLY so stale lines
+        // from pre-fix .env files are stripped — never rewritten.
         const tokenVars = new Set([
           'HOPGPT_BEARER_TOKEN',
           'HOPGPT_COOKIE_CONNECT_SID',
+          'HOPGPT_COOKIE_OPENID_USER_ID',
           'HOPGPT_COOKIE_REFRESH_TOKEN'
         ]);
 
@@ -301,6 +316,9 @@ export class HopGPTClient {
         if (sessionToSave) {
           tokenLines.push(`HOPGPT_COOKIE_CONNECT_SID=${sessionToSave}`);
         }
+        if (openidIdToSave) {
+          tokenLines.push(`HOPGPT_COOKIE_OPENID_USER_ID=${openidIdToSave}`);
+        }
 
         let insertIndex = 0;
         for (let i = 0; i < preservedLines.length; i++) {
@@ -321,22 +339,23 @@ export class HopGPTClient {
 
         fs.writeFileSync(this.envPath, finalContent);
 
-        // Verify the write by reading back connect.sid
+        // Verify the write by reading back the refresh credential (openid_user_id)
+        // since that's the load-bearing one for /api/auth/refresh.
         const verifyContent = fs.readFileSync(this.envPath, 'utf-8');
-        const verifyMatch = verifyContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m);
-        const verifiedSid = verifyMatch ? verifyMatch[1].trim() : null;
+        const verifyMatch = verifyContent.match(/^HOPGPT_COOKIE_OPENID_USER_ID=(.+)$/m);
+        const verifiedId = verifyMatch ? verifyMatch[1].trim() : null;
 
-        if (sessionToSave && verifiedSid === sessionToSave) {
+        if (openidIdToSave && verifiedId === openidIdToSave) {
           log.info('Credentials persisted and verified in .env', {
-            sessionMasked: maskToken(verifiedSid)
+            openidIdMasked: maskToken(verifiedId)
           });
-        } else if (sessionToSave) {
-          log.error('CRITICAL: .env verification failed — session cookie mismatch', {
-            expectedMasked: maskToken(sessionToSave),
-            actualMasked: maskToken(verifiedSid)
+        } else if (openidIdToSave) {
+          log.error('CRITICAL: .env verification failed — openid_user_id mismatch', {
+            expectedMasked: maskToken(openidIdToSave),
+            actualMasked: maskToken(verifiedId)
           });
         } else {
-          log.debug('Credentials persisted to .env (no session cookie to verify)');
+          log.debug('Credentials persisted to .env (no openid_user_id to verify)');
         }
       } catch (error) {
         log.error('Failed to persist credentials', { error: error.message, stack: error.stack });
@@ -363,7 +382,7 @@ export class HopGPTClient {
    * @returns {boolean} True if token should be refreshed
    */
   _shouldProactivelyRefresh() {
-    if (!this.autoRefresh || !this.cookies.connect_sid) {
+    if (!this.autoRefresh || !this.cookies.openid_user_id) {
       return false;
     }
 
@@ -412,8 +431,8 @@ export class HopGPTClient {
       return this.refreshPromise;
     }
 
-    if (!this.cookies.connect_sid) {
-      log.error('No session cookie (connect.sid) available — run: npm run extract');
+    if (!this.cookies.openid_user_id) {
+      log.error('No refresh cookie (openid_user_id) available — run: npm run extract');
       return false;
     }
 
@@ -437,6 +456,8 @@ export class HopGPTClient {
    */
   async _doRefreshTokens() {
     log.info('Attempting token refresh', {
+      openidIdPresent: !!this.cookies.openid_user_id,
+      openidIdMasked: maskToken(this.cookies.openid_user_id),
       sessionPresent: !!this.cookies.connect_sid,
       sessionMasked: maskToken(this.cookies.connect_sid)
     });
@@ -471,23 +492,41 @@ export class HopGPTClient {
         browserType
       });
 
+      const rawBody = response.body || '';
+
       if (!response.ok) {
-        const errorText = response.body || '';
         log.error('Token refresh failed', { status: response.status, statusText: response.statusText });
-        log.debug('Refresh error response body', { body: errorText });
-        
-        // Classify the error based on status code and response
+        log.debug('Refresh error response body', { body: rawBody });
+
         if (response.status === 401 || response.status === 403) {
           throw new RefreshTokenExpiredError();
-        } else if (response.status === 503 || errorText.includes('cf-') || errorText.includes('cloudflare')) {
+        } else if (response.status === 503 || rawBody.includes('cf-') || rawBody.includes('cloudflare')) {
           throw new CloudflareBlockedError();
         }
-        // Generic failure - return false for backwards compatibility
         return false;
       }
 
-      // Parse the response to get the new bearer token
-      const data = await response.json();
+      // Parse the response to get the new bearer token.
+      // Some LibreChat builds return 200 OK with a plain-text error body like
+      // "Refresh token has expired" when the session is no longer valid — handle
+      // non-JSON bodies as auth failures rather than letting JSON.parse throw.
+      let data;
+      try {
+        data = await response.json();
+      } catch (parseError) {
+        const bodyPreview = rawBody.slice(0, 200);
+        log.error('Refresh response was not JSON (likely a session error from the server)', {
+          bodyPreview,
+          parseError: parseError.message
+        });
+        if (/refresh\s*token|session|unauthori[sz]ed|expired/i.test(rawBody)) {
+          throw new RefreshTokenExpiredError();
+        }
+        if (rawBody.includes('cf-') || rawBody.includes('cloudflare')) {
+          throw new CloudflareBlockedError();
+        }
+        throw new NetworkError(new Error(`Non-JSON refresh response: ${bodyPreview}`));
+      }
 
       if (data.token) {
         this.bearerToken = data.token;
@@ -498,8 +537,10 @@ export class HopGPTClient {
         return false;
       }
 
-      // Update cookies from Set-Cookie headers (server may rotate connect.sid)
+      // Update cookies from Set-Cookie headers (server may rotate
+      // connect.sid and/or openid_user_id).
       const oldSid = this.cookies.connect_sid;
+      const oldOpenidId = this.cookies.openid_user_id;
 
       const setCookieHeaders = response.headers['set-cookie'] || response.headers['Set-Cookie'];
       if (setCookieHeaders) {
@@ -517,9 +558,16 @@ export class HopGPTClient {
           old: maskToken(oldSid),
           new: maskToken(this.cookies.connect_sid)
         });
-      } else if (!this.cookies.connect_sid) {
-        log.error('No session cookie after refresh — future refreshes will fail', {
-          hadOldSession: !!oldSid
+      }
+      if (this.cookies.openid_user_id && this.cookies.openid_user_id !== oldOpenidId) {
+        log.info('Refresh cookie (openid_user_id) rotated by server', {
+          old: maskToken(oldOpenidId),
+          new: maskToken(this.cookies.openid_user_id)
+        });
+      }
+      if (!this.cookies.openid_user_id) {
+        log.error('No openid_user_id after refresh — future refreshes will fail', {
+          hadOldOpenidId: !!oldOpenidId
         });
       }
 
@@ -803,9 +851,13 @@ export class HopGPTClient {
     const missing = [];
     const warnings = [];
 
-    // Session cookie is required for auto-refresh to work
+    // openid_user_id is the actual refresh credential HopGPT's server reads.
+    if (!this.cookies.openid_user_id) {
+      missing.push('HOPGPT_COOKIE_OPENID_USER_ID');
+    }
+
     if (!this.cookies.connect_sid) {
-      missing.push('HOPGPT_COOKIE_CONNECT_SID');
+      warnings.push('HOPGPT_COOKIE_CONNECT_SID not set; Express session may be rejected');
     }
 
     if (!this.cookies.cf_clearance) {
@@ -820,9 +872,9 @@ export class HopGPTClient {
       warnings.push('HOPGPT_USER_AGENT not set; Cloudflare may require a browser user agent');
     }
 
-    // Bearer token is optional if session cookie is available (we can refresh it)
+    // Bearer token is optional if the refresh cookie is available.
     if (!this.bearerToken) {
-      if (this.cookies.connect_sid) {
+      if (this.cookies.openid_user_id) {
         warnings.push('HOPGPT_BEARER_TOKEN not set, will attempt to refresh on first request');
       } else {
         missing.push('HOPGPT_BEARER_TOKEN');

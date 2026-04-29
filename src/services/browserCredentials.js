@@ -131,19 +131,21 @@ export async function extractCredentials(options = {}) {
       userAgent,
       cookies: {
         connect_sid: findCookie(cookies, 'connect.sid'),
+        openid_user_id: findCookie(cookies, 'openid_user_id'),
         cf_clearance: findCookie(cookies, 'cf_clearance'),
         __cf_bm: findCookie(cookies, '__cf_bm'),
         token_provider: findCookie(cookies, 'token_provider')
       }
     };
 
-    if (!credentials.cookies.connect_sid) {
+    if (!credentials.cookies.openid_user_id) {
       const jhCookieNames = cookies
         .filter((c) => c.domain && c.domain.endsWith('jh.edu'))
         .map((c) => `${c.name}@${c.domain}`)
         .join(', ') || '(none)';
       throw new Error(
-        `Logged in but connect.sid cookie was not set. Cookies on *.jh.edu at detection: ${jhCookieNames}. ` +
+        `Logged in but openid_user_id cookie (the refresh credential) was not set. ` +
+        `Cookies on *.jh.edu at detection: ${jhCookieNames}. ` +
         `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`
       );
     }
@@ -152,6 +154,7 @@ export async function extractCredentials(options = {}) {
     writeEnvFile(envPath, envContent);
 
     console.log('\nExtracted:');
+    console.log(`  openid_user_id: ${credentials.cookies.openid_user_id ? 'yes' : 'no'}`);
     console.log(`  connect.sid:    ${credentials.cookies.connect_sid ? 'yes' : 'no'}`);
     console.log(`  cf_clearance:   ${credentials.cookies.cf_clearance ? 'yes' : 'no'}`);
     console.log(`  __cf_bm:        ${credentials.cookies.__cf_bm ? 'yes' : 'no'}`);
@@ -192,6 +195,9 @@ export function generateEnvContent(credentials) {
     lines.push(`HOPGPT_USER_AGENT="${credentials.userAgent}"`);
   }
 
+  if (credentials.cookies.openid_user_id) {
+    lines.push(`HOPGPT_COOKIE_OPENID_USER_ID=${credentials.cookies.openid_user_id}`);
+  }
   if (credentials.cookies.connect_sid) {
     lines.push(`HOPGPT_COOKIE_CONNECT_SID=${credentials.cookies.connect_sid}`);
   }
@@ -224,6 +230,7 @@ export function writeEnvFile(envPath, newContent) {
       'HOPGPT_USER_AGENT',
       'HOPGPT_COOKIE_CF_CLEARANCE',
       'HOPGPT_COOKIE_CONNECT_SID',
+      'HOPGPT_COOKIE_OPENID_USER_ID',
       'HOPGPT_COOKIE_CF_BM',
       'HOPGPT_COOKIE_REFRESH_TOKEN', // strip on rewrite
       'HOPGPT_COOKIE_TOKEN_PROVIDER'
