@@ -442,24 +442,10 @@ export class HopGPTClient {
    * @private
    */
   async _doRefreshTokens() {
-    const refreshTokenInfo = this._getTokenExpiryInfo(this.cookies.refreshToken);
-    
-    // Enhanced diagnostic logging for refresh token state
     log.info('Attempting token refresh', {
-      refreshTokenExpiry: refreshTokenInfo ? `${refreshTokenInfo.expiresInSeconds}s` : 'invalid',
-      refreshTokenMasked: maskToken(this.cookies.refreshToken)
+      sessionPresent: !!this.cookies.connect_sid,
+      sessionMasked: maskToken(this.cookies.connect_sid)
     });
-    
-    if (!refreshTokenInfo) {
-      log.warn('Refresh token diagnostics', {
-        tokenLength: this.cookies.refreshToken?.length || 0,
-        hasThreeParts: this.cookies.refreshToken?.split('.').length === 3,
-        note: 'Token may not be a standard JWT or may be corrupted'
-      });
-    } else {
-      log.debug('Refresh token info:', 
-        `expires in ${Math.round(refreshTokenInfo.expiresInSeconds / 3600)}h, expired: ${refreshTokenInfo.isExpired}`);
-    }
 
     try {
       const url = `${this.baseURL}/api/auth/refresh`;
@@ -518,39 +504,29 @@ export class HopGPTClient {
         return false;
       }
 
-      // Update cookies from Set-Cookie headers (includes rotated refresh token)
-      const oldRefreshToken = this.cookies.refreshToken;
-      const oldRefreshMasked = maskToken(oldRefreshToken);
-      
+      // Update cookies from Set-Cookie headers (server may rotate connect.sid)
+      const oldSid = this.cookies.connect_sid;
+
       const setCookieHeaders = response.headers['set-cookie'] || response.headers['Set-Cookie'];
       if (setCookieHeaders) {
         const headerArray = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
-        log.debug('Received Set-Cookie headers', { 
+        log.debug('Received Set-Cookie headers', {
           count: headerArray.length,
           cookieNames: headerArray.map(h => h.split('=')[0]).join(', ')
         });
-      } else {
-        log.warn('No Set-Cookie headers in refresh response - refresh token will NOT be rotated');
       }
-      
+
       this.updateCookiesFromTLSResponse(response.headers);
 
-      // Check if refresh token was rotated
-      const newRefreshMasked = maskToken(this.cookies.refreshToken);
-      if (this.cookies.refreshToken && this.cookies.refreshToken !== oldRefreshToken) {
-        log.info('Refresh token rotated by server', {
-          oldToken: oldRefreshMasked,
-          newToken: newRefreshMasked
+      if (this.cookies.connect_sid && this.cookies.connect_sid !== oldSid) {
+        log.info('Session cookie rotated by server', {
+          old: maskToken(oldSid),
+          new: maskToken(this.cookies.connect_sid)
         });
-        const newRefreshInfo = this._getTokenExpiryInfo(this.cookies.refreshToken);
-        log.info('New refresh token expiry', { expiresIn: newRefreshInfo ? `${Math.round(newRefreshInfo.expiresInSeconds / 3600)}h` : 'unknown' });
-      } else if (!this.cookies.refreshToken) {
-        log.error('No refresh token after refresh - future refreshes will fail!', {
-          hadOldToken: !!oldRefreshToken,
-          oldToken: oldRefreshMasked
+      } else if (!this.cookies.connect_sid) {
+        log.error('No session cookie after refresh — future refreshes will fail', {
+          hadOldSession: !!oldSid
         });
-      } else {
-        log.debug('Refresh token NOT rotated (same token)', { token: newRefreshMasked });
       }
 
       // Persist new credentials to .env so they survive server restarts
