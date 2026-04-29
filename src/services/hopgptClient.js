@@ -224,6 +224,7 @@ export class HopGPTClient {
   _parseCookies(setCookieHeaders) {
     for (const cookieStr of setCookieHeaders) {
       const [cookiePart] = cookieStr.split(';');
+      // Split on the first '=' only — cookie values can contain '=' (e.g. base64-padded JWTs).
       const equalsIndex = cookiePart.indexOf('=');
       if (equalsIndex === -1) continue;
       const name = cookiePart.substring(0, equalsIndex);
