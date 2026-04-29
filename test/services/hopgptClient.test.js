@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { HopGPTClient, HopGPTError } from '../../src/services/hopgptClient.js';
 import * as tlsClient from '../../src/services/tlsClient.js';
 import {
@@ -505,6 +508,32 @@ describe('HopGPTClient', () => {
       ]);
       expect(client.cookies.cf_clearance).toBe('cf-new');
       expect(client.cookies.__cf_bm).toBe('bm-new');
+    });
+  });
+
+  describe('persistCredentials (.env rewrite)', () => {
+    it('strips a stale HOPGPT_COOKIE_REFRESH_TOKEN line and writes HOPGPT_COOKIE_CONNECT_SID', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hopgpt-test-'));
+      const envPath = path.join(tmpDir, '.env');
+      fs.writeFileSync(envPath,
+        'HOPGPT_COOKIE_REFRESH_TOKEN=stale-value\n' +
+        'SOMETHING_ELSE=keep\n'
+      );
+
+      const client = new HopGPTClient({
+        connectSid: 'fresh-sid',
+        bearerToken: 'fresh-bearer',
+        envPath
+      });
+      await client.persistCredentials();
+
+      const written = fs.readFileSync(envPath, 'utf-8');
+      expect(written).toContain('HOPGPT_COOKIE_CONNECT_SID=fresh-sid');
+      expect(written).toContain('HOPGPT_BEARER_TOKEN=fresh-bearer');
+      expect(written).not.toContain('HOPGPT_COOKIE_REFRESH_TOKEN');
+      expect(written).toContain('SOMETHING_ELSE=keep');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     });
   });
 });

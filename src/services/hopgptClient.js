@@ -256,34 +256,34 @@ export class HopGPTClient {
       await envWritePromise;
     }
 
-    const refreshTokenToSave = this.cookies.refreshToken;
+    const sessionToSave = this.cookies.connect_sid;
     const bearerTokenToSave = this.bearerToken;
-    
+
     log.debug('Persisting credentials to .env', {
-      refreshTokenMasked: maskToken(refreshTokenToSave),
+      sessionMasked: maskToken(sessionToSave),
       bearerTokenMasked: maskToken(bearerTokenToSave)
     });
 
-    // Create the write operation and store it in the mutex
     const writeOperation = (async () => {
       try {
         let existingContent = '';
         const preservedLines = [];
 
-        // Variables we will update
+        // Variables we will (re-)write on persist.
+        // Note: HOPGPT_COOKIE_REFRESH_TOKEN is included here ONLY so that any
+        // stale line from pre-fix .env files gets stripped on next persist.
         const tokenVars = new Set([
           'HOPGPT_BEARER_TOKEN',
+          'HOPGPT_COOKIE_CONNECT_SID',
           'HOPGPT_COOKIE_REFRESH_TOKEN'
         ]);
 
-        // Read existing .env if it exists
         if (fs.existsSync(this.envPath)) {
           existingContent = fs.readFileSync(this.envPath, 'utf-8');
 
           for (const line of existingContent.split('\n')) {
             const trimmed = line.trim();
 
-            // Check if this line sets a token variable we want to update
             const isTokenVar = Array.from(tokenVars).some(v =>
               trimmed.startsWith(`${v}=`) || trimmed.startsWith(`# ${v}=`)
             );
@@ -294,16 +294,14 @@ export class HopGPTClient {
           }
         }
 
-        // Build new token lines
         const tokenLines = [];
         if (bearerTokenToSave) {
           tokenLines.push(`HOPGPT_BEARER_TOKEN=${bearerTokenToSave}`);
         }
-        if (refreshTokenToSave) {
-          tokenLines.push(`HOPGPT_COOKIE_REFRESH_TOKEN=${refreshTokenToSave}`);
+        if (sessionToSave) {
+          tokenLines.push(`HOPGPT_COOKIE_CONNECT_SID=${sessionToSave}`);
         }
 
-        // Find where to insert token lines (after header comments, before other content)
         let insertIndex = 0;
         for (let i = 0; i < preservedLines.length; i++) {
           const line = preservedLines[i].trim();
@@ -314,39 +312,35 @@ export class HopGPTClient {
           }
         }
 
-        // Insert token lines
         preservedLines.splice(insertIndex, 0, ...tokenLines);
 
-        // Ensure file ends with newline
         let finalContent = preservedLines.join('\n');
         if (!finalContent.endsWith('\n')) {
           finalContent += '\n';
         }
 
-        // Write back to .env
         fs.writeFileSync(this.envPath, finalContent);
 
-        // Verify the write succeeded by reading back the refresh token
+        // Verify the write by reading back connect.sid
         const verifyContent = fs.readFileSync(this.envPath, 'utf-8');
-        const verifyMatch = verifyContent.match(/^HOPGPT_COOKIE_REFRESH_TOKEN=(.+)$/m);
-        const verifiedToken = verifyMatch ? verifyMatch[1].trim() : null;
-        
-        if (refreshTokenToSave && verifiedToken === refreshTokenToSave) {
+        const verifyMatch = verifyContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m);
+        const verifiedSid = verifyMatch ? verifyMatch[1].trim() : null;
+
+        if (sessionToSave && verifiedSid === sessionToSave) {
           log.info('Credentials persisted and verified in .env', {
-            refreshTokenMasked: maskToken(verifiedToken)
+            sessionMasked: maskToken(verifiedSid)
           });
-        } else if (refreshTokenToSave) {
-          log.error('CRITICAL: .env verification failed - token mismatch!', {
-            expectedMasked: maskToken(refreshTokenToSave),
-            actualMasked: maskToken(verifiedToken)
+        } else if (sessionToSave) {
+          log.error('CRITICAL: .env verification failed — session cookie mismatch', {
+            expectedMasked: maskToken(sessionToSave),
+            actualMasked: maskToken(verifiedSid)
           });
         } else {
-          log.debug('Credentials persisted to .env (no refresh token to verify)');
+          log.debug('Credentials persisted to .env (no session cookie to verify)');
         }
       } catch (error) {
         log.error('Failed to persist credentials', { error: error.message, stack: error.stack });
       } finally {
-        // Clear the mutex when done
         envWritePromise = null;
       }
     })();
