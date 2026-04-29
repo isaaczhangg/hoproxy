@@ -369,18 +369,15 @@ export class HopGPTClient {
    * @returns {boolean} True if token should be refreshed
    */
   _shouldProactivelyRefresh() {
-    if (!this.autoRefresh || !this.cookies.refreshToken) {
+    if (!this.autoRefresh || !this.cookies.connect_sid) {
       return false;
     }
 
     const expiryInfo = this._getTokenExpiryInfo(this.bearerToken);
     if (!expiryInfo) {
-      // If we have no bearer token or can't decode it as JWT, refresh proactively
-      // This fixes the case where bearerToken exists but is invalid/malformed
       return true;
     }
 
-    // Refresh if token expires within the buffer period
     return expiryInfo.expiresInSeconds <= this.proactiveRefreshBufferSec;
   }
 
@@ -420,8 +417,8 @@ export class HopGPTClient {
       return this.refreshPromise;
     }
 
-    if (!this.cookies.refreshToken) {
-      log.error('No refresh token available');
+    if (!this.cookies.connect_sid) {
+      log.error('No session cookie (connect.sid) available — run: npm run extract');
       return false;
     }
 
@@ -835,9 +832,9 @@ export class HopGPTClient {
     const missing = [];
     const warnings = [];
 
-    // Refresh token is required for auto-refresh to work
-    if (!this.cookies.refreshToken) {
-      missing.push('HOPGPT_COOKIE_REFRESH_TOKEN');
+    // Session cookie is required for auto-refresh to work
+    if (!this.cookies.connect_sid) {
+      missing.push('HOPGPT_COOKIE_CONNECT_SID');
     }
 
     if (!this.cookies.cf_clearance) {
@@ -852,9 +849,9 @@ export class HopGPTClient {
       warnings.push('HOPGPT_USER_AGENT not set; Cloudflare may require a browser user agent');
     }
 
-    // Bearer token is optional if refresh token is available (we can refresh it)
+    // Bearer token is optional if session cookie is available (we can refresh it)
     if (!this.bearerToken) {
-      if (this.cookies.refreshToken) {
+      if (this.cookies.connect_sid) {
         warnings.push('HOPGPT_BEARER_TOKEN not set, will attempt to refresh on first request');
       } else {
         missing.push('HOPGPT_BEARER_TOKEN');
