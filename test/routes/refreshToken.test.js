@@ -26,7 +26,7 @@ describe('refresh-token route', () => {
 
   it('returns authentication_error when refresh token expired', async () => {
     const mockClient = {
-      cookies: { connect_sid: 'session-id' },
+      cookies: { connect_sid: 'session-id', openid_user_id: 'openid-id' },
       refreshTokens: vi.fn()
     };
     mockClient.refreshTokens.mockRejectedValue(new RefreshTokenExpiredError());
@@ -42,7 +42,7 @@ describe('refresh-token route', () => {
 
   it('returns api_error when Cloudflare blocks refresh', async () => {
     const mockClient = {
-      cookies: { connect_sid: 'session-id' },
+      cookies: { connect_sid: 'session-id', openid_user_id: 'openid-id' },
       refreshTokens: vi.fn()
     };
     mockClient.refreshTokens.mockRejectedValue(new CloudflareBlockedError());
@@ -62,10 +62,10 @@ describe('GET /token-status', () => {
     getDefaultClient.mockReset();
   });
 
-  it('returns new shape with session.present = true and no refreshToken field', async () => {
+  it('returns new shape with bearerToken + refreshCredential + session and no refreshToken field', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: 'bearer',
-      cookies: { connect_sid: 'sid' },
+      cookies: { connect_sid: 'sid', openid_user_id: 'oid' },
       autoRefresh: true
     });
 
@@ -74,12 +74,14 @@ describe('GET /token-status', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('bearerToken');
+    expect(res.body).toHaveProperty('refreshCredential');
+    expect(res.body.refreshCredential.present).toBe(true);
     expect(res.body).toHaveProperty('session');
     expect(res.body.session).toEqual({ present: true });
     expect(res.body).not.toHaveProperty('refreshToken');
   });
 
-  it('session.present is false when connect_sid is unset', async () => {
+  it('refreshCredential.present is false when openid_user_id is unset', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: null,
       cookies: {},
@@ -89,16 +91,17 @@ describe('GET /token-status', () => {
     const app = createApp();
     const res = await request(app).get('/token-status');
 
+    expect(res.body.refreshCredential.present).toBe(false);
     expect(res.body.session).toEqual({ present: false });
   });
 });
 
-describe('POST /refresh-token — missing session', () => {
+describe('POST /refresh-token — missing refresh credential', () => {
   beforeEach(() => {
     getDefaultClient.mockReset();
   });
 
-  it('returns 400 with HOPGPT_COOKIE_CONNECT_SID hint when connect_sid missing', async () => {
+  it('returns 400 with HOPGPT_COOKIE_OPENID_USER_ID hint when openid_user_id missing', async () => {
     getDefaultClient.mockReturnValue({
       cookies: {},
       refreshTokens: vi.fn()
@@ -108,6 +111,6 @@ describe('POST /refresh-token — missing session', () => {
     const res = await request(app).post('/refresh-token');
 
     expect(res.status).toBe(400);
-    expect(res.body.error.message).toContain('HOPGPT_COOKIE_CONNECT_SID');
+    expect(res.body.error.message).toContain('HOPGPT_COOKIE_OPENID_USER_ID');
   });
 });

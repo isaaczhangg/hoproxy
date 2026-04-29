@@ -45,6 +45,23 @@ function logStartupTokenDiagnostics() {
     log.warn('Bearer token: NOT SET (will attempt refresh on first request)');
   }
 
+  const openidId = client.cookies?.openid_user_id;
+  const openidInfo = getTokenExpiryInfo(openidId);
+  if (openidId) {
+    log.info('Refresh credential (openid_user_id)', {
+      present: true,
+      masked: maskToken(openidId),
+      isValidJWT: !!openidInfo,
+      expiresIn: openidInfo ? `${Math.round(openidInfo.expiresInSeconds / 3600)}h` : 'N/A',
+      isExpired: openidInfo?.isExpired ?? 'unknown'
+    });
+    if (openidInfo?.isExpired) {
+      log.error('Refresh credential is EXPIRED — re-authentication required (run: npm run extract)');
+    }
+  } else {
+    log.error('Refresh credential (openid_user_id): NOT SET — auth will fail (run: npm run extract)');
+  }
+
   const sid = client.cookies?.connect_sid;
   if (sid) {
     log.info('Session cookie (connect.sid)', {
@@ -53,15 +70,20 @@ function logStartupTokenDiagnostics() {
       length: sid.length
     });
   } else {
-    log.error('Session cookie: NOT SET — authentication will fail (run: npm run extract)');
+    log.warn('Session cookie (connect.sid): NOT SET — auth may be rejected (run: npm run extract)');
   }
 
   try {
     if (fs.existsSync(envPath)) {
       const envContent = fs.readFileSync(envPath, 'utf-8');
+      const envOpenidMatch = envContent.match(/^HOPGPT_COOKIE_OPENID_USER_ID=(.+)$/m);
+      const envOpenidId = envOpenidMatch ? envOpenidMatch[1].trim() : null;
       const envSidMatch = envContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m);
       const envSid = envSidMatch ? envSidMatch[1].trim() : null;
 
+      if (envOpenidId && openidId && envOpenidId !== openidId) {
+        log.debug('.env refresh credential differs from memory — will be reconciled on next refresh');
+      }
       if (envSid && sid && envSid !== sid) {
         log.debug('.env session cookie differs from memory — will be reconciled on next refresh');
       }
