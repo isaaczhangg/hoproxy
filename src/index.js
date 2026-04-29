@@ -28,10 +28,9 @@ function maskToken(token) {
 function logStartupTokenDiagnostics() {
   const client = getDefaultClient();
   const envPath = path.join(process.cwd(), '.env');
-  
+
   log.info('=== Token Diagnostics on Startup ===');
-  
-  // Check bearer token
+
   const bearerToken = client.bearerToken;
   const bearerInfo = getTokenExpiryInfo(bearerToken);
   if (bearerToken) {
@@ -45,52 +44,32 @@ function logStartupTokenDiagnostics() {
   } else {
     log.warn('Bearer token: NOT SET (will attempt refresh on first request)');
   }
-  
-  // Check refresh token
-  const refreshToken = client.cookies?.refreshToken;
-  const refreshInfo = getTokenExpiryInfo(refreshToken);
-  if (refreshToken) {
-    log.info('Refresh token', {
+
+  const sid = client.cookies?.connect_sid;
+  if (sid) {
+    log.info('Session cookie (connect.sid)', {
       present: true,
-      masked: maskToken(refreshToken),
-      isValidJWT: !!refreshInfo,
-      expiresIn: refreshInfo ? `${Math.round(refreshInfo.expiresInSeconds / 3600)}h` : 'N/A',
-      isExpired: refreshInfo?.isExpired ?? 'unknown'
+      masked: maskToken(sid),
+      length: sid.length
     });
-    
-    if (!refreshInfo) {
-      log.warn('Refresh token is NOT a valid JWT - this may indicate corruption or an unsupported token format');
-    } else if (refreshInfo.isExpired) {
-      log.error('Refresh token is EXPIRED - re-authentication required (run: npm run extract)');
-    }
   } else {
-    log.error('Refresh token: NOT SET - authentication will fail (run: npm run extract)');
+    log.error('Session cookie: NOT SET — authentication will fail (run: npm run extract)');
   }
-  
-  // Verify .env file matches in-memory state
+
   try {
     if (fs.existsSync(envPath)) {
       const envContent = fs.readFileSync(envPath, 'utf-8');
-      const envRefreshMatch = envContent.match(/^HOPGPT_COOKIE_REFRESH_TOKEN=(.+)$/m);
-      const envRefreshToken = envRefreshMatch ? envRefreshMatch[1].trim() : null;
-      
-      if (envRefreshToken && refreshToken) {
-        const tokensMatch = envRefreshToken === refreshToken;
-        log.debug('.env refresh token verification', {
-          envMasked: maskToken(envRefreshToken),
-          memoryMasked: maskToken(refreshToken),
-          match: tokensMatch
-        });
-        if (!tokensMatch) {
-          log.warn('.env refresh token differs from in-memory token - possible env loading issue');
-        }
+      const envSidMatch = envContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m);
+      const envSid = envSidMatch ? envSidMatch[1].trim() : null;
+
+      if (envSid && sid && envSid !== sid) {
+        log.debug('.env session cookie differs from memory — will be reconciled on next refresh');
       }
     }
   } catch (err) {
     log.debug('Could not verify .env file', { error: err.message });
   }
-  
-  // Check Cloudflare cookies
+
   const cfClearance = client.cookies?.cf_clearance;
   const cfBm = client.cookies?.__cf_bm;
   if (!cfClearance || !cfBm) {
@@ -100,7 +79,7 @@ function logStartupTokenDiagnostics() {
       note: 'This may cause Cloudflare blocks, but TLS fingerprinting should help bypass'
     });
   }
-  
+
   log.info('=== End Token Diagnostics ===');
 }
 
