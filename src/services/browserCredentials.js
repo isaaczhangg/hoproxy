@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 
 const HOPGPT_URL = 'https://chat.ai.jh.edu';
-const AUTH_REFRESH_PATH = '/api/auth/refresh';
+const USER_PATH = '/api/user';
 const CONFIG_PATH = '/api/config';
 
 puppeteer.use(StealthPlugin());
@@ -39,26 +39,30 @@ async function launchBrowser(options = {}) {
 }
 
 /**
- * Returns true when `response` signals that login is complete.
+ * Returns true when `response` signals that the user has genuinely authenticated.
+ * We need to distinguish "page loaded" from "user completed SSO" — HopGPT's JS
+ * hits /api/auth/refresh on every page load, including unauthenticated ones,
+ * so that endpoint is NOT a valid login signal.
+ *
+ * A cookie named openid_user_id in the REQUEST header proves SSO completed
+ * (the OIDC issuer set it after password + 2FA). We accept authenticated
+ * /api/user or /api/config calls as the signal.
  */
 function isLoginSignal(response) {
   const url = response.url();
   const status = response.status();
-  const ok = status >= 200 && status < 400;
-  if (!ok) return false;
+  if (status < 200 || status >= 400) return false;
 
-  if (url.startsWith(HOPGPT_URL + AUTH_REFRESH_PATH)) {
-    return true;
-  }
-  if (url.startsWith(HOPGPT_URL + CONFIG_PATH)) {
-    // Accept /api/config as co-primary only if the request carried connect.sid.
-    // Match `connect.sid` as a whole cookie name (start of header or after `; `)
-    // so names like `_connect.sid` or matching values don't false-positive.
-    const request = response.request();
-    const cookieHeader = request.headers()['cookie'] || '';
-    return /(?:^|;\s*)connect\.sid=/.test(cookieHeader);
-  }
-  return false;
+  const isUser = url.startsWith(HOPGPT_URL + USER_PATH);
+  const isConfig = url.startsWith(HOPGPT_URL + CONFIG_PATH);
+  if (!isUser && !isConfig) return false;
+
+  // The request must carry openid_user_id — that's the OIDC-issued cookie that
+  // only exists after the user actually authenticated. connect.sid alone is set
+  // even for anonymous visitors.
+  const request = response.request();
+  const cookieHeader = request.headers()['cookie'] || '';
+  return /(?:^|;\s*)openid_user_id=/.test(cookieHeader);
 }
 
 export async function extractCredentials(options = {}) {
