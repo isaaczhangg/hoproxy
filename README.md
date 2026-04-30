@@ -168,6 +168,10 @@ State expires after `CONVERSATION_TTL_MS` (6h default).
 
 Need deeper insight? `HOPGPT_DEBUG=true npm start` logs incoming HopGPT events, detected tool-call XML, and parsed tool calls. `GET /token-debug` compares in-memory auth state against `.env`.
 
+## Streaming protocol
+
+HopGPT uses a two-phase chat protocol. HoProxy POSTs `/api/agents/chat/AnthropicClaude` to get a `{streamId, conversationId, status:"started"}` ack, then GETs `/api/agents/chat/stream/{streamId}` for the SSE event stream. Retry policy splits by phase: POST 401/403/429 fully re-runs the sequence; GET 401/403/429 retries the subscription only (reusing the same `streamId`) to avoid duplicating the user's persisted message on HopGPT's server. No user-visible configuration changes.
+
 ## Testing
 
 ```bash
