@@ -19,7 +19,10 @@ for (let i = 0; i < args.length; i++) {
     i++;
   } else if (args[i] === '--help' || args[i] === '-h') {
     console.log(`
-HopGPT Browser Credential Extraction
+HopGPT Credential Extraction
+
+Extracts credentials from a live browser session by observing the post-login
+/api/auth/refresh or /api/config call. Writes them to .env.
 
 Usage: npm run extract [-- options]
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { HopGPTClient, HopGPTError } from '../../src/services/hopgptClient.js';
 import * as tlsClient from '../../src/services/tlsClient.js';
 import {
@@ -38,11 +41,35 @@ describe('HopGPTClient', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns false when refresh token is missing', async () => {
-    const client = new HopGPTClient({ bearerToken: 'token', refreshToken: null });
+  it('returns false when refresh credential is missing', async () => {
+    const client = new HopGPTClient({ bearerToken: 'token', openidUserId: null });
     const refreshed = await client.refreshTokens();
 
     expect(refreshed).toBe(false);
+  });
+
+  describe('refreshTokens() gate', () => {
+    it('returns false when openid_user_id is missing', async () => {
+      const client = new HopGPTClient({ openidUserId: null });
+      const result = await client.refreshTokens();
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('validateAuth()', () => {
+    it('lists HOPGPT_COOKIE_OPENID_USER_ID in missing when openid_user_id is unset', () => {
+      const client = new HopGPTClient({ openidUserId: null, bearerToken: 'b' });
+      const result = client.validateAuth();
+      expect(result.missing).toContain('HOPGPT_COOKIE_OPENID_USER_ID');
+      expect(result.missing).not.toContain('HOPGPT_COOKIE_REFRESH_TOKEN');
+    });
+
+    it('valid when openid_user_id is present (bearer can be refreshed)', () => {
+      const client = new HopGPTClient({ openidUserId: 'id', bearerToken: null });
+      const result = client.validateAuth();
+      expect(result.valid).toBe(true);
+      expect(result.warnings.some(w => w.includes('HOPGPT_BEARER_TOKEN'))).toBe(true);
+    });
   });
 
   it('refreshes tokens and retries on auth errors', async () => {
@@ -51,7 +78,7 @@ describe('HopGPTClient', () => {
       status: 200,
       body: JSON.stringify({ token: 'new-token' }),
       headers: {
-        'set-cookie': ['refreshToken=new-refresh; Path=/;']
+        'set-cookie': ['connect.sid=new-session; Path=/;']
       }
     });
     const successResponse = createMockTLSResponse({
@@ -75,13 +102,13 @@ describe('HopGPTClient', () => {
     const client = new HopGPTClient({
       baseURL: 'https://example.com',
       bearerToken: 'old-token',  // Non-JWT triggers proactive refresh
-      refreshToken: 'refresh-token'
+      connectSid: 'session-id', openidUserId: 'openid-id'
     });
 
     const response = await client.sendMessage({ text: 'hello' });
     expect(response.ok).toBe(true);
     expect(client.bearerToken).toBe('new-token');
-    expect(client.cookies.refreshToken).toBe('new-refresh');
+    expect(client.cookies.connect_sid).toBe('new-session');
     // Proactive refresh (1 call) + chat request (1 call) = 2 calls
     expect(refreshCalls).toBe(1);
     expect(chatCalls).toBe(1);
@@ -95,7 +122,7 @@ describe('HopGPTClient', () => {
       status: 200,
       body: JSON.stringify({ token: 'new-bearer-token' }),
       headers: {
-        'set-cookie': [`refreshToken=${jwtWithEquals}; Path=/; HttpOnly`]
+        'set-cookie': [`connect.sid=${jwtWithEquals}; Path=/; HttpOnly`]
       }
     });
 
@@ -103,14 +130,14 @@ describe('HopGPTClient', () => {
 
     const client = new HopGPTClient({
       baseURL: 'https://example.com',
-      refreshToken: 'old-refresh-token',
+      connectSid: 'old-session', openidUserId: 'old-openid',
       autoPersist: false
     });
 
     const refreshed = await client.refreshTokens();
     expect(refreshed).toBe(true);
     // The full JWT with trailing '==' should be preserved
-    expect(client.cookies.refreshToken).toBe(jwtWithEquals);
+    expect(client.cookies.connect_sid).toBe(jwtWithEquals);
   });
 
   it('maps HopGPT errors to Anthropic error formats', () => {
@@ -157,7 +184,7 @@ describe('HopGPTClient', () => {
         ok: true,
         status: 200,
         body: JSON.stringify({ token: 'new-token' }),
-        headers: { 'set-cookie': ['refreshToken=new-refresh; Path=/;'] }
+        headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
       let chatCalls = 0;
@@ -175,7 +202,7 @@ describe('HopGPTClient', () => {
     const client = new HopGPTClient({
       baseURL: 'https://example.com',
       bearerToken: 'token',  // Non-JWT triggers proactive refresh
-      refreshToken: 'refresh-token',
+      connectSid: 'session-id', openidUserId: 'openid-id',
       rateLimitMaxRetries: 3,
       rateLimitBaseDelayMs: 10  // Use short delay for tests
     });
@@ -199,7 +226,7 @@ describe('HopGPTClient', () => {
         ok: true,
         status: 200,
         body: JSON.stringify({ token: 'new-token' }),
-        headers: { 'set-cookie': ['refreshToken=new-refresh; Path=/;'] }
+        headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
       let chatCalls = 0;
@@ -214,7 +241,7 @@ describe('HopGPTClient', () => {
     const client = new HopGPTClient({
       baseURL: 'https://example.com',
       bearerToken: 'token',  // Non-JWT triggers proactive refresh
-      refreshToken: 'refresh-token',
+      connectSid: 'session-id', openidUserId: 'openid-id',
       rateLimitMaxRetries: 2,
       rateLimitBaseDelayMs: 10
     });
@@ -240,7 +267,7 @@ describe('HopGPTClient', () => {
         ok: true,
         status: 200,
         body: JSON.stringify({ token: 'new-token' }),
-        headers: { 'set-cookie': ['refreshToken=new-refresh; Path=/;'] }
+        headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
       let chatCalls = 0;
@@ -255,7 +282,7 @@ describe('HopGPTClient', () => {
       const client = new HopGPTClient({
         baseURL: 'https://example.com',
         bearerToken: 'token',  // Non-JWT triggers proactive refresh
-        refreshToken: 'refresh-token',
+        connectSid: 'session-id', openidUserId: 'openid-id',
         rateLimitMaxRetries: 3,
         rateLimitMaxWaitTimeMs: 10000  // 10 seconds max
       });
@@ -307,7 +334,7 @@ describe('HopGPTClient', () => {
       tlsFetchSpy.mockResolvedValue(refreshResponseNoToken);
 
       const client = new HopGPTClient({
-        refreshToken: 'valid-refresh',
+        connectSid: 'valid-session', openidUserId: 'valid-openid',
         autoPersist: false
       });
 
@@ -326,7 +353,7 @@ describe('HopGPTClient', () => {
       tlsFetchSpy.mockResolvedValue(unauthorizedResponse);
 
       const client = new HopGPTClient({
-        refreshToken: 'expired-refresh',
+        connectSid: 'expired-session', openidUserId: 'expired-openid',
         autoPersist: false
       });
 
@@ -344,7 +371,7 @@ describe('HopGPTClient', () => {
       tlsFetchSpy.mockResolvedValue(forbiddenResponse);
 
       const client = new HopGPTClient({
-        refreshToken: 'invalid-refresh',
+        connectSid: 'invalid-session', openidUserId: 'invalid-openid',
         autoPersist: false
       });
 
@@ -362,7 +389,7 @@ describe('HopGPTClient', () => {
       tlsFetchSpy.mockResolvedValue(cfBlockedResponse);
 
       const client = new HopGPTClient({
-        refreshToken: 'valid-refresh',
+        connectSid: 'valid-session', openidUserId: 'valid-openid',
         autoPersist: false
       });
 
@@ -373,7 +400,7 @@ describe('HopGPTClient', () => {
       tlsFetchSpy.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const client = new HopGPTClient({
-        refreshToken: 'valid-refresh',
+        connectSid: 'valid-session', openidUserId: 'valid-openid',
         autoPersist: false
       });
 
@@ -393,7 +420,7 @@ describe('HopGPTClient', () => {
       const client = new HopGPTClient({
         baseURL: 'https://example.com',
         bearerToken: 'invalid-token',  // Non-JWT triggers proactive refresh
-        refreshToken: 'valid-refresh',
+        connectSid: 'valid-session', openidUserId: 'valid-openid',
         autoPersist: false
       });
 
@@ -406,7 +433,7 @@ describe('HopGPTClient', () => {
         ok: true,
         status: 200,
         body: JSON.stringify({ token: 'new-token' }),
-        headers: { 'set-cookie': ['refreshToken=new-refresh; Path=/;'] }
+        headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
       tlsFetchSpy.mockImplementation(async () => {
@@ -417,7 +444,7 @@ describe('HopGPTClient', () => {
       });
 
       const client = new HopGPTClient({
-        refreshToken: 'valid-refresh',
+        connectSid: 'valid-session', openidUserId: 'valid-openid',
         autoPersist: false
       });
 
@@ -431,6 +458,87 @@ describe('HopGPTClient', () => {
       expect(result2).toBe(true);
       // Should only make ONE actual HTTP call due to mutex
       expect(refreshCallCount).toBe(1);
+    });
+  });
+
+  describe('buildCookieHeader', () => {
+    it('does NOT emit a refreshToken cookie even if one is somehow set', () => {
+      const client = new HopGPTClient({
+        connectSid: 'sid-value',
+        cfClearance: 'cf-value'
+      });
+      // Attempt to sneak a refreshToken in — it must be ignored.
+      client.cookies.refreshToken = 'should-be-ignored';
+      const header = client.buildCookieHeader();
+      expect(header).toContain('connect.sid=sid-value');
+      expect(header).toContain('cf_clearance=cf-value');
+      expect(header).not.toContain('refreshToken');
+    });
+
+    it('emits only known session + Cloudflare + OIDC cookies from a clean client', () => {
+      const client = new HopGPTClient({
+        connectSid: 'sid-value',
+        openidUserId: 'oid-value',
+        cfClearance: 'cf-value',
+        cfBm: 'bm-value',
+        tokenProvider: 'openid'
+      });
+      const header = client.buildCookieHeader();
+      expect(header).toBe('cf_clearance=cf-value; connect.sid=sid-value; __cf_bm=bm-value; token_provider=openid; openid_user_id=oid-value');
+    });
+  });
+
+  describe('_parseCookies (rotation from Set-Cookie)', () => {
+    it('rotates connect.sid when server sends a new one', () => {
+      const client = new HopGPTClient({ connectSid: 'old-sid' });
+      client._parseCookies(['connect.sid=new-sid; Path=/; HttpOnly']);
+      expect(client.cookies.connect_sid).toBe('new-sid');
+    });
+
+    it('does NOT set a refreshToken field when server sends refreshToken cookie (field should not exist)', () => {
+      const client = new HopGPTClient({ connectSid: 'sid' });
+      client._parseCookies(['refreshToken=should-be-ignored; Path=/; HttpOnly']);
+      expect(client.cookies.refreshToken).toBeUndefined();
+    });
+
+    it('rotates cf_clearance and __cf_bm', () => {
+      const client = new HopGPTClient({});
+      client._parseCookies([
+        'cf_clearance=cf-new; Path=/',
+        '__cf_bm=bm-new; Path=/'
+      ]);
+      expect(client.cookies.cf_clearance).toBe('cf-new');
+      expect(client.cookies.__cf_bm).toBe('bm-new');
+    });
+  });
+
+  describe('persistCredentials (.env rewrite)', () => {
+    it('strips a stale HOPGPT_COOKIE_REFRESH_TOKEN line and writes the new credential vars', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hopgpt-test-'));
+      try {
+        const envPath = path.join(tmpDir, '.env');
+        fs.writeFileSync(envPath,
+          'HOPGPT_COOKIE_REFRESH_TOKEN=stale-value\n' +
+          'SOMETHING_ELSE=keep\n'
+        );
+
+        const client = new HopGPTClient({
+          connectSid: 'fresh-sid',
+          openidUserId: 'fresh-openid',
+          bearerToken: 'fresh-bearer',
+          envPath
+        });
+        await client.persistCredentials();
+
+        const written = fs.readFileSync(envPath, 'utf-8');
+        expect(written).toContain('HOPGPT_COOKIE_CONNECT_SID=fresh-sid');
+        expect(written).toContain('HOPGPT_COOKIE_OPENID_USER_ID=fresh-openid');
+        expect(written).toContain('HOPGPT_BEARER_TOKEN=fresh-bearer');
+        expect(written).not.toContain('HOPGPT_COOKIE_REFRESH_TOKEN');
+        expect(written).toContain('SOMETHING_ELSE=keep');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

@@ -51,14 +51,15 @@ If automatic extraction fails, create a `.env` file manually:
 
 ```bash
 # .env (minimum required)
-HOPGPT_COOKIE_REFRESH_TOKEN=eyJhbGciOiJIUzI1NiIs...
+HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
 
-# Optional (auto-obtained via refresh token)
+# Recommended (auto-obtained via openid_user_id)
 HOPGPT_BEARER_TOKEN=eyJhbGciOiJIUzI1NiIs...
 HOPGPT_USER_AGENT="Mozilla/5.0 ..."
+HOPGPT_COOKIE_CONNECT_SID=s%3A...
 HOPGPT_COOKIE_CF_CLEARANCE=...
-HOPGPT_COOKIE_CONNECT_SID=...
 HOPGPT_COOKIE_CF_BM=...
+HOPGPT_COOKIE_TOKEN_PROVIDER=openid
 ```
 
 ---
@@ -114,7 +115,7 @@ export ANTHROPIC_MODEL=claude-sonnet-4-5
 
 - **Connection refused**: Ensure HoProxy is running and listening on `http://localhost:3001`.
 - **`authentication_error` from HoProxy**: Your HopGPT cookies/tokens are missing or expired. Re-run `npm run extract` and restart the server.
-- **401/403 from HopGPT**: The refresh token likely expired; re-authenticate and re-extract credentials.
+- **401/403 from HopGPT**: The `openid_user_id` JWT likely expired (~7-day lifespan); re-authenticate with `npm run extract`.
 - **Cloudflare "Attention Required" page**: Your Cloudflare cookies or user agent are missing/expired. Re-run `npm run extract` and restart the server.
 - **Streaming output arrives all at once**: Ensure `HOPGPT_STREAMING_TRANSPORT=fetch` (default). If Cloudflare blocks streaming with native fetch, set `HOPGPT_STREAMING_TRANSPORT=tls` to fall back to non-streaming TLS.
 - **Model warning or not found**: Use a supported model from the list below or call `GET /v1/models`.
@@ -338,13 +339,13 @@ curl -X POST http://localhost:3001/refresh-token
 | Variable | Description |
 |----------|-------------|
 | `PORT` | Server port (default: 3001) |
-| `HOPGPT_BEARER_TOKEN` | JWT Bearer token from Authorization header (optional if refresh token is set) |
+| `HOPGPT_BEARER_TOKEN` | JWT Bearer token from Authorization header (optional if `HOPGPT_COOKIE_OPENID_USER_ID` is set; auto-minted on first request) |
 | `HOPGPT_USER_AGENT` | Browser User-Agent header (recommended to satisfy Cloudflare) |
-| `HOPGPT_COOKIE_CF_CLEARANCE` | Cloudflare clearance cookie |
-| `HOPGPT_COOKIE_CONNECT_SID` | Session ID cookie |
-| `HOPGPT_COOKIE_CF_BM` | Cloudflare bot management cookie |
-| `HOPGPT_COOKIE_REFRESH_TOKEN` | Refresh token cookie (required for auto-refresh) |
-| `HOPGPT_COOKIE_TOKEN_PROVIDER` | Token provider (default: `librechat`) |
+| `HOPGPT_COOKIE_OPENID_USER_ID` | **Required.** OIDC-issued refresh JWT. Named `openid_user_id` in the browser cookie jar; used as the refresh credential. |
+| `HOPGPT_COOKIE_CONNECT_SID` | Express session cookie (recommended; sent alongside the refresh credential) |
+| `HOPGPT_COOKIE_CF_CLEARANCE` | Cloudflare clearance cookie (recommended) |
+| `HOPGPT_COOKIE_CF_BM` | Cloudflare bot management cookie (optional; often not set on fresh sessions) |
+| `HOPGPT_COOKIE_TOKEN_PROVIDER` | Token provider; current value in production is `openid` (falls back to `librechat` if unset) |
 | `CONVERSATION_TTL_MS` | In-memory conversation state TTL in ms (default: 21600000) |
 | `HOPGPT_DEBUG` | Enable debug logging for troubleshooting (default: unset) |
 | `HOPGPT_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error`, `silent` (default: `info`) |
@@ -373,6 +374,8 @@ Extraction-only:
 | `/token-debug` | GET | Detailed token diagnostics (compares memory vs .env) |
 | `/health` | GET | Health check |
 
+> **Breaking change (2026-04-28):** `/token-status` and `/token-debug` response shapes no longer expose a `refreshToken` field. HopGPT does not use a refresh-token cookie; the refresh credential is `openid_user_id` (exposed as `refreshCredential`) and the session is `connect.sid` (exposed as `session`). Neither endpoint was previously documented as a stable contract.
+
 ## Conversation State
 
 The proxy tracks HopGPT conversation threading in-memory so multi-turn requests can reuse context and cache keys.
@@ -390,27 +393,32 @@ Conversation state is stored in-memory and expires after `CONVERSATION_TTL_MS` (
 When a request fails with a 401/403 authentication error, the proxy will:
 
 1. Call the HopGPT refresh endpoint (`/api/auth/refresh`)
-2. Obtain a new bearer token using the refresh token cookie
+2. Obtain a new bearer token using the `openid_user_id` cookie (an OIDC-issued JWT despite the name)
 3. Retry the original request with the new token
 
-This extends the effective session from ~15 minutes (bearer token lifespan) to ~7 days (refresh token lifespan).
+This extends the effective session from ~75 minutes (bearer token lifespan) to ~7 days (`openid_user_id` JWT lifespan).
 
 ### Token Lifespans
 
 | Token | Lifespan | Notes |
 |-------|----------|-------|
-| Bearer Token | ~15 minutes | Automatically refreshed when expired |
-| Refresh Token | ~7 days | Requires manual re-authentication when expired |
-| Cloudflare cookies | Variable | May need to be refreshed if you encounter issues |
+| Bearer Token | ~75 minutes | Automatically refreshed when expired |
+| `openid_user_id` | ~7 days | Requires manual re-authentication via `npm run extract` when expired |
+| `connect.sid` | Session-scoped | Rotated by the server on every `/api/auth/refresh`; tracked alongside the refresh credential |
+| Cloudflare cookies | Variable | May need to be refreshed if you encounter blocks |
 
 ### Minimal Configuration
 
-With auto-refresh enabled, you only need to provide the **refresh token**. The bearer token will be obtained automatically on the first request:
+With auto-refresh enabled, you only need to provide the **refresh credential** (`HOPGPT_COOKIE_OPENID_USER_ID`). The bearer token and session cookie will be obtained automatically on the first request:
 
 ```bash
 # Minimal .env configuration
-HOPGPT_COOKIE_REFRESH_TOKEN=eyJhbGciOiJIUzI1NiIs...
+HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
 ```
+
+> **Migration note (2026-04-28):** earlier versions of HoProxy required `HOPGPT_COOKIE_REFRESH_TOKEN`. HopGPT's server never actually read that variable — it reads `openid_user_id` from the cookie jar. If you have a pre-upgrade `.env` with `HOPGPT_COOKIE_REFRESH_TOKEN=`, delete the line (it's harmless either way; the new code strips it on the next persist) and re-run `npm run extract` to populate `HOPGPT_COOKIE_OPENID_USER_ID`.
+
+> **Known limitation (2026-04-28):** HopGPT's server recently changed its streaming response protocol — `POST /api/agents/chat/AnthropicClaude` now returns a stream-acknowledgment body (`{streamId, conversationId, status: "started"}`) instead of SSE event frames, and the client is expected to subscribe to a separate stream endpoint. HoProxy's upstream transformer has not yet been updated for this, so chat requests currently return empty `content` with `input_tokens: 0, output_tokens: 0`. The authentication and extraction pipeline is fully functional; only the streaming path is affected. See the next release for the streaming-protocol fix.
 
 ## Project Structure
 
