@@ -1772,6 +1772,33 @@ export class HopGPTToAnthropicTransformer {
       }
 
       const events = [];
+
+      // HopGPT signals upstream failures (e.g. Bedrock rejections) by returning
+      // a single {type:"error", error:"..."} content block on the final event.
+      // Surface that as an Anthropic-shape SSE error event so clients see a real
+      // failure instead of an empty stream (which the Vercel AI SDK crashes on
+      // with AI_JSONParseError text="undefined").
+      const errorBlock = this._findErrorContentBlock(finalContent);
+      if (errorBlock) {
+        events.push({
+          event: 'error',
+          data: {
+            type: 'error',
+            error: {
+              type: 'api_error',
+              message: typeof errorBlock.error === 'string'
+                ? errorBlock.error
+                : (errorBlock.message || 'HopGPT returned an error')
+            }
+          }
+        });
+        const stopEvents = this._createMessageStop();
+        if (stopEvents) {
+          events.push(...stopEvents);
+        }
+        return events;
+      }
+
       if (finalContent && finalContent.length > 0 && !this.hasEmittedNonThinkingContent) {
         this.mcpToolCallBuffer = '';
         this._toolBufferWarningEmitted = false;
@@ -1885,21 +1912,44 @@ export class HopGPTToAnthropicTransformer {
   _processContentBlock(block) {
     const events = [];
 
-    // Handle thinking blocks
-    if (block.type === 'thinking' && block.thinking) {
-      // If we were in a different block type, close it first
+    // Handle thinking blocks. HopGPT emits several shapes:
+    //   - Anthropic: { type: "thinking", thinking: "...", signature: "..." }
+    //   - Gemini-style: { thought: true, text: "...", thoughtSignature: "..." }
+    //                   (sometimes with type:"text" alongside thought:true)
+    //   - Opus-4.5 reasoning on HopGPT: { type: "text", text: "..." } with NO
+    //     `index` field for reasoning preamble, then { type: "text", text: "...",
+    //     index: 0 } once the real reply starts. We only treat indexless text as
+    //     thinking when the caller actually requested thinking — otherwise an
+    //     indexless text delta from a non-thinking backend is ordinary content.
+    const isIndexlessReasoningText =
+      this.thinkingEnabled &&
+      block.type === 'text' &&
+      typeof block.text === 'string' &&
+      typeof block.index !== 'number';
+
+    const isThinkingBlock =
+      (block.type === 'thinking' && block.thinking) ||
+      block.thought === true ||
+      isIndexlessReasoningText;
+
+    if (isThinkingBlock) {
+      const thinkingText = block.thinking || block.text || '';
+      const signature = block.signature || block.thoughtSignature || null;
+
+      if (!thinkingText) {
+        return events.length > 0 ? events : null;
+      }
+
       if (this.blockStarted && this.currentBlockType !== 'thinking') {
         events.push(this._createBlockStop());
       }
 
-      // Start thinking block if needed
       if (!this.blockStarted || this.currentBlockType !== 'thinking') {
         const startEvent = this._createBlockStart('thinking');
         if (startEvent) events.push(startEvent);
       }
 
-      // Add thinking delta
-      this.accumulatedThinking += block.thinking;
+      this.accumulatedThinking += thinkingText;
       events.push({
         event: 'content_block_delta',
         data: {
@@ -1907,14 +1957,13 @@ export class HopGPTToAnthropicTransformer {
           index: this.currentBlockIndex,
           delta: {
             type: 'thinking_delta',
-            thinking: block.thinking
+            thinking: thinkingText
           }
         }
       });
 
-      // Capture signature if present
-      if (block.signature) {
-        this.thinkingSignature = block.signature;
+      if (signature) {
+        this.thinkingSignature = signature;
         cacheThinkingSignature(this.thinkingSignature, 'claude');
       }
 
@@ -2020,14 +2069,16 @@ export class HopGPTToAnthropicTransformer {
       if (stopAfterTool) {
         break;
       }
-      if (block.type === 'thinking') {
-        if (block.signature) {
-          cacheThinkingSignature(block.signature, 'claude');
+      const isThoughtBlock = block.type === 'thinking' || block.thought === true;
+      if (isThoughtBlock) {
+        const signature = block.signature || block.thoughtSignature || null;
+        if (signature) {
+          cacheThinkingSignature(signature, 'claude');
         }
         this.contentBlocks.push({
           type: 'thinking',
-          thinking: block.thinking || this.accumulatedThinking,
-          signature: block.signature || this.thinkingSignature
+          thinking: block.thinking || block.text || this.accumulatedThinking,
+          signature: signature || this.thinkingSignature
         });
       } else if (block.type === 'text') {
         // In passthrough mode, don't parse MCP tool calls - preserve text as-is
@@ -2127,7 +2178,10 @@ export class HopGPTToAnthropicTransformer {
         break;
       }
 
-      if (block.type === 'thinking' && block.thinking) {
+      const isThoughtBlock =
+        (block.type === 'thinking' && block.thinking) ||
+        block.thought === true;
+      if (isThoughtBlock) {
         const blockEvents = this._processContentBlock(block);
         if (blockEvents) {
           events.push(...blockEvents);
@@ -2592,6 +2646,20 @@ export class HopGPTToAnthropicTransformer {
       events.push(this._createBlockStop());
     }
 
+    // If HopGPT closed the stream after thinking-only (no reply tokens, no tool
+    // call), emit an empty text content block so clients like Vercel AI SDK can
+    // parse the message. Without this they see a message whose only block is
+    // thinking, can't extract text, and throw AI_JSONParseError("undefined").
+    if (this.hasStarted && !this.hasEmittedNonThinkingContent && !this.hasToolUse) {
+      const startEvent = this._createBlockStart('text');
+      if (Array.isArray(startEvent)) {
+        events.push(...startEvent);
+      } else if (startEvent) {
+        events.push(startEvent);
+      }
+      events.push(this._createBlockStop());
+    }
+
     const { stopReason, stopSequence } = this._determineStopInfo();
 
     // Add message_delta with stop reason
@@ -2618,6 +2686,18 @@ export class HopGPTToAnthropicTransformer {
     });
 
     return events;
+  }
+
+  _findErrorContentBlock(content) {
+    if (!Array.isArray(content)) {
+      return null;
+    }
+    for (const block of content) {
+      if (block && block.type === 'error' && (block.error || block.message)) {
+        return block;
+      }
+    }
+    return null;
   }
 
   _normalizeFinalContent(responseMessage) {

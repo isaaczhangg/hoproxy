@@ -104,11 +104,7 @@ function buildToolInjectionPrompt(tools, toolChoice) {
 
     prompt += `### ${tool.name}\n`;
     if (tool.description) {
-      // Truncate very long descriptions
-      const desc = tool.description.length > 500
-        ? tool.description.slice(0, 500) + '...'
-        : tool.description;
-      prompt += `${desc}\n\n`;
+      prompt += `${truncateToolDescription(tool.description)}\n\n`;
     }
 
     if (Object.keys(properties).length > 0) {
@@ -117,7 +113,8 @@ function buildToolInjectionPrompt(tools, toolChoice) {
         const reqMark = required.includes(paramName) ? ' (required)' : '';
         const paramType = describeSchemaType(paramDef);
         const paramDesc = paramDef.description ? `: ${truncateSchemaDescription(paramDef.description)}` : '';
-        prompt += `- ${paramName}${reqMark} [${paramType}]${paramDesc}\n`;
+        const enumHint = formatEnumHint(paramDef);
+        prompt += `- ${paramName}${reqMark} [${paramType}]${paramDesc}${enumHint}\n`;
         const detailLines = formatSchemaDetailLines(paramDef, 1);
         for (const line of detailLines) {
           prompt += `${line}\n`;
@@ -432,12 +429,63 @@ function describeSchemaType(schema) {
 
 const MAX_SCHEMA_DEPTH = 4;
 const MAX_SCHEMA_PROPERTIES = 12;
+const MAX_TOOL_DESCRIPTION_CHARS = 4000;
+const MAX_PARAM_DESCRIPTION_CHARS = 2000;
+const MAX_ENUM_VALUES = 32;
+const MAX_ENUM_VALUE_CHARS = 80;
+
+function truncateToolDescription(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.length > MAX_TOOL_DESCRIPTION_CHARS
+    ? `${value.slice(0, MAX_TOOL_DESCRIPTION_CHARS)}...`
+    : value;
+}
 
 function truncateSchemaDescription(value) {
   if (typeof value !== "string") {
     return "";
   }
-  return value.length > 500 ? `${value.slice(0, 500)}...` : value;
+  return value.length > MAX_PARAM_DESCRIPTION_CHARS
+    ? `${value.slice(0, MAX_PARAM_DESCRIPTION_CHARS)}...`
+    : value;
+}
+
+function formatEnumHint(schema) {
+  if (!schema || typeof schema !== "object") {
+    return "";
+  }
+  const values = Array.isArray(schema.enum) ? schema.enum : null;
+  if (!values || values.length === 0) {
+    return "";
+  }
+
+  const rendered = [];
+  for (const value of values.slice(0, MAX_ENUM_VALUES)) {
+    if (value === null) {
+      rendered.push("null");
+      continue;
+    }
+    const type = typeof value;
+    if (type === "string") {
+      const trimmed = value.length > MAX_ENUM_VALUE_CHARS
+        ? `${value.slice(0, MAX_ENUM_VALUE_CHARS)}...`
+        : value;
+      rendered.push(JSON.stringify(trimmed));
+    } else if (type === "number" || type === "boolean") {
+      rendered.push(String(value));
+    }
+  }
+
+  if (rendered.length === 0) {
+    return "";
+  }
+
+  const suffix = values.length > MAX_ENUM_VALUES
+    ? `, ... (${values.length - MAX_ENUM_VALUES} more)`
+    : "";
+  return ` — allowed: ${rendered.join(", ")}${suffix}`;
 }
 
 function formatSchemaDetailLines(schema, depth = 0) {
@@ -451,7 +499,8 @@ function formatSchemaDetailLines(schema, depth = 0) {
   if (schema.items && typeof schema.items === "object") {
     const itemType = describeSchemaType(schema.items);
     const itemDesc = schema.items.description ? `: ${truncateSchemaDescription(schema.items.description)}` : "";
-    lines.push(`${indent}- items [${itemType}]${itemDesc}`);
+    const itemEnum = formatEnumHint(schema.items);
+    lines.push(`${indent}- items [${itemType}]${itemDesc}${itemEnum}`);
     lines.push(...formatSchemaDetailLines(schema.items, depth + 1));
   }
 
@@ -462,7 +511,8 @@ function formatSchemaDetailLines(schema, depth = 0) {
       const reqMark = required.has(name) ? " (required)" : "";
       const propType = describeSchemaType(propSchema);
       const propDesc = propSchema.description ? `: ${truncateSchemaDescription(propSchema.description)}` : "";
-      lines.push(`${indent}- ${name}${reqMark} [${propType}]${propDesc}`);
+      const propEnum = formatEnumHint(propSchema);
+      lines.push(`${indent}- ${name}${reqMark} [${propType}]${propDesc}${propEnum}`);
       lines.push(...formatSchemaDetailLines(propSchema, depth + 1));
     }
     if (entries.length > MAX_SCHEMA_PROPERTIES) {
@@ -857,8 +907,15 @@ export function transformAnthropicToHopGPT(
   if (!stopSequences.includes(toolCallStopSequence)) {
     stopSequences.push(toolCallStopSequence);
   }
-  if (maxTokens !== null) {
-    hopGPTRequest.max_tokens = maxTokens;
+  // Bedrock (via HopGPT) rejects requests where `max_tokens <= thinking.budget_tokens`.
+  // Empirically the implicit budget for `reasoning_effort: "high"` is a few thousand
+  // tokens, so floor max_tokens at 8192 whenever thinking is on to keep the request valid.
+  const THINKING_MAX_TOKENS_FLOOR = 8192;
+  const effectiveMaxTokens = thinkingConfig.enabled
+    ? Math.max(maxTokens ?? 0, THINKING_MAX_TOKENS_FLOOR)
+    : maxTokens;
+  if (effectiveMaxTokens !== null && effectiveMaxTokens > 0) {
+    hopGPTRequest.max_tokens = effectiveMaxTokens;
   }
   hopGPTRequest.stop_sequences = stopSequences;
 

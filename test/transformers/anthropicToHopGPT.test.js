@@ -143,4 +143,48 @@ describe('anthropicToHopGPT transformers', () => {
 
     expect(result.stop_sequences).toEqual(['<end>', '<|hopgpt_tool_stop|>']);
   });
+
+  // Regression: HopGPT's Bedrock backend rejects requests with
+  // "max_tokens must be greater than thinking.budget_tokens" when max_tokens
+  // is small relative to the implicit thinking budget assigned by "reasoning_effort: high".
+  // Empirically, a threshold around 4-8K is required. Boost max_tokens to at
+  // least 8192 when thinking is enabled so Bedrock doesn't reject the request.
+  it('raises max_tokens floor to 8192 when thinking is enabled and max_tokens is small', () => {
+    const request = {
+      model: 'claude-opus-4-5',
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: 'Hello' }]
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.reasoning_effort).toBe('high');
+    expect(result.max_tokens).toBeGreaterThanOrEqual(8192);
+  });
+
+  it('preserves max_tokens above the thinking floor', () => {
+    const request = {
+      model: 'claude-opus-4-5',
+      max_tokens: 32000,
+      messages: [{ role: 'user', content: 'Hello' }]
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.reasoning_effort).toBe('high');
+    expect(result.max_tokens).toBe(32000);
+  });
+
+  it('does not raise max_tokens when thinking is not enabled', () => {
+    const request = {
+      model: 'claude-haiku-4-5',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: 'Hello' }]
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.reasoning_effort).toBeUndefined();
+    expect(result.max_tokens).toBe(512);
+  });
 });

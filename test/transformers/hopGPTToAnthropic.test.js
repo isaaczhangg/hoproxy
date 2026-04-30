@@ -115,6 +115,315 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(response.stop_reason).toBe('tool_use');
   });
 
+  it('treats type:text deltas without an index as thinking when thinking is enabled', () => {
+    // HopGPT's Opus 4.5 reasoning mode emits preamble as plain {type:"text", text:...}
+    // blocks with no `index` field, then the real reply arrives with `index:0` set.
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const events = [];
+    const pushEvents = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    pushEvents({ created: true, message: { id: 'msg-create' } });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'The user said "hi" - a simple greeting. ' }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'I should respond briefly.' }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'Hello!', index: 0 }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: ' How can I help?', index: 0 }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: []
+      }
+    });
+
+    const textDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta')
+      .map(evt => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).toBe('Hello! How can I help?');
+    expect(textDeltas).not.toContain('The user said');
+
+    const thinkingDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'thinking_delta')
+      .map(evt => evt.data.delta.thinking)
+      .join('');
+    expect(thinkingDeltas).toContain('The user said');
+    expect(thinkingDeltas).toContain('respond briefly');
+  });
+
+  it('emits indexless text as regular text when thinking is disabled', () => {
+    // When the model/request doesn't enable thinking, indexless text deltas
+    // are just content and must flow through as text_delta — don't invent thinking.
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5', {
+      thinkingEnabled: false
+    });
+
+    const events = [];
+    const pushEvents = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    pushEvents({ created: true, message: { id: 'msg-create' } });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'Hi there!' }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: []
+      }
+    });
+
+    const textDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta')
+      .map(evt => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).toBe('Hi there!');
+
+    const thinkingDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'thinking_delta');
+    expect(thinkingDeltas).toHaveLength(0);
+  });
+
+  it('routes Gemini-style thought blocks (thought:true only) to thinking, not text', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const events = [];
+    const pushEvents = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    pushEvents({ created: true, message: { id: 'msg-create' } });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            {
+              thought: true,
+              text: 'The user just said "hi". I should respond briefly.',
+              thoughtSignature: 'sig-thought-1'
+            }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'Hi! How can I help you today?', index: 0 }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: []
+      }
+    });
+
+    const textDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta')
+      .map(evt => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).toBe('Hi! How can I help you today?');
+    expect(textDeltas).not.toContain('The user just said');
+
+    const thinkingDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'thinking_delta')
+      .map(evt => evt.data.delta.thinking)
+      .join('');
+    expect(thinkingDeltas).toContain('The user just said');
+  });
+
+  it('routes Gemini-style thought blocks in final responseMessage content to thinking', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const pushEvents = (data) => transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify(data)
+    });
+
+    pushEvents({ created: true, message: { id: 'msg-create' } });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: [
+          {
+            thought: true,
+            text: 'Reasoning about the greeting.',
+            thoughtSignature: 'sig-final-1'
+          },
+          { type: 'text', text: 'Hi there!' }
+        ]
+      }
+    });
+
+    const response = transformer.buildNonStreamingResponse();
+    expect(response.content).toEqual([
+      expect.objectContaining({
+        type: 'thinking',
+        thinking: 'Reasoning about the greeting.'
+      }),
+      expect.objectContaining({ type: 'text', text: 'Hi there!' })
+    ]);
+  });
+
+  it('routes text blocks with thought:true flag to thinking, not text', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const events = [];
+    const pushEvents = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    pushEvents({ created: true, message: { id: 'msg-create' } });
+    // Some HopGPT backends mark thinking content with type:"text" plus thought:true
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            {
+              type: 'text',
+              thought: true,
+              text: 'Let me think about what to say.',
+              thoughtSignature: 'sig-thought-2'
+            }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'Hi!', index: 0 }
+          ]
+        }
+      }
+    });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: []
+      }
+    });
+
+    const textDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta')
+      .map(evt => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).toBe('Hi!');
+    expect(textDeltas).not.toContain('Let me think');
+
+    const thinkingDeltas = events
+      .filter(evt => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'thinking_delta')
+      .map(evt => evt.data.delta.thinking)
+      .join('');
+    expect(thinkingDeltas).toContain('Let me think about');
+  });
+
   it('extracts mcp_tool_call blocks from text and emits tool_use', () => {
     const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
       thinkingEnabled: false
@@ -1344,6 +1653,170 @@ line3"}}
     expect(input.todos.length).toBe(2);
     expect(input.todos[0].id).toBe('1');
     expect(input.todos[1].id).toBe('2');
+  });
+
+  // Regression: HopGPT sometimes returns a final event whose content is a single
+  // { type: "error", error: "..." } block (e.g. when Bedrock rejects the request).
+  // Without special handling, the transformer emits an empty SSE body and OpenCode's
+  // AI SDK throws AI_JSONParseError with text:"undefined". Surface it as a proper
+  // Anthropic-shape error event instead so the client sees a real failure.
+  it('surfaces HopGPT error content blocks as Anthropic error events', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const events = [];
+    const feed = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    feed({
+      final: true,
+      responseMessage: {
+        content: [
+          {
+            type: 'error',
+            error: 'An error occurred while processing the request: 400 litellm.BadRequestError: BedrockException - max_tokens must be greater than thinking.budget_tokens'
+          }
+        ]
+      }
+    });
+
+    const errorEvent = events.find(evt => evt.event === 'error');
+    expect(errorEvent).toBeTruthy();
+    expect(errorEvent.data.type).toBe('error');
+    expect(errorEvent.data.error.type).toBe('api_error');
+    expect(errorEvent.data.error.message).toMatch(/BedrockException|max_tokens/);
+
+    // The transformer should still emit message_stop to properly terminate the stream
+    const messageStop = events.find(evt => evt.event === 'message_stop');
+    expect(messageStop).toBeTruthy();
+    expect(transformer.hasEnded()).toBe(true);
+  });
+
+  // Regression: when HopGPT's Bedrock upstream truncates a thinking-only stream
+  // (no text reply, no final event), HoProxy's forceEnd used to emit just
+  // message_delta + message_stop with no content blocks beyond thinking. Vercel
+  // AI SDK then throws AI_JSONParseError(text="undefined") because it expects
+  // at least one text block. Emit an empty text block as a fallback so clients
+  // get a well-formed (if empty) message.
+  it('forceEnd emits an empty text block when only thinking was streamed', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const events = [];
+    const feed = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    // Stream only thinking (indexless text delta routed through the thinking path)
+    feed({ created: true, message: { id: 'msg-trunc' } });
+    feed({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            { type: 'text', text: 'The user just said' }
+          ]
+        }
+      }
+    });
+
+    // Sanity check: we did emit a thinking block but no text block
+    expect(events.some(e => e.event === 'content_block_start' && e.data.content_block.type === 'thinking')).toBe(true);
+    expect(events.some(e => e.event === 'content_block_start' && e.data.content_block.type === 'text')).toBe(false);
+
+    // HopGPT closes the stream without emitting a final event or any reply tokens.
+    const cleanup = transformer.forceEnd();
+    const allEvents = [...events, ...cleanup];
+
+    // forceEnd must emit an empty text content block so the AI SDK can parse the message
+    const textBlockStart = allEvents.find(evt =>
+      evt.event === 'content_block_start' &&
+      evt.data.content_block?.type === 'text'
+    );
+    expect(textBlockStart).toBeTruthy();
+
+    // That text block should also be closed before message_stop
+    const textBlockStartIndex = textBlockStart.data.index;
+    const textBlockStop = allEvents.find(evt =>
+      evt.event === 'content_block_stop' && evt.data.index === textBlockStartIndex
+    );
+    expect(textBlockStop).toBeTruthy();
+
+    const stopIdx = allEvents.findIndex(evt => evt.event === 'message_stop');
+    const stopEventIdx = allEvents.indexOf(textBlockStop);
+    expect(stopEventIdx).toBeLessThan(stopIdx);
+  });
+
+  // Regression: HopGPT's final event for opus-4-5 can contain a single merged
+  // { type: "text", text: "<reasoning><reply>" } block where reasoning prose is
+  // glued directly to the reply with no delimiter. The streaming deltas path
+  // routes indexless text to thinking, but the final path must NOT emit the
+  // entire merged text as a text block when only-thinking was streamed — that
+  // would double-emit the reasoning to the client. If no deltas were streamed
+  // at all, we fall through to the legacy text path.
+  it('final merged reasoning+reply text is not re-emitted when thinking was already streamed', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const events = [];
+    const feed = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data)
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    feed({ created: true, message: { id: 'msg-merged' } });
+    // Stream the reasoning as indexless text deltas (routed to thinking by our fix)
+    feed({
+      event: 'on_message_delta',
+      data: {
+        delta: { content: [{ type: 'text', text: 'Thinking about this... ' }] }
+      }
+    });
+    // Then the actual reply tokens arrive with an index field
+    feed({
+      event: 'on_message_delta',
+      data: {
+        delta: { content: [{ type: 'text', text: 'Hi there!', index: 0 }] }
+      }
+    });
+    // Final event carries merged reasoning+reply as a single text block
+    feed({
+      final: true,
+      responseMessage: {
+        content: [
+          { type: 'text', text: 'Thinking about this... Hi there!' }
+        ]
+      }
+    });
+
+    // The reply should appear exactly once in text_delta events
+    const textDeltas = events.filter(e =>
+      e.event === 'content_block_delta' && e.data.delta?.type === 'text_delta'
+    );
+    const combinedText = textDeltas.map(e => e.data.delta.text).join('');
+    expect(combinedText).toBe('Hi there!');
+    expect(combinedText).not.toContain('Thinking about this');
   });
 
   it('forceEnd emits message_stop when stream ends without final event', () => {
