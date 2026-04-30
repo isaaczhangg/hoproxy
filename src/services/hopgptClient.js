@@ -34,6 +34,7 @@ export class HopGPTClient {
   constructor(config = {}) {
     this.baseURL = config.baseURL || 'https://chat.ai.jh.edu';
     this.endpoint = config.endpoint || '/api/agents/chat/AnthropicClaude';
+    this.streamEndpointPrefix = config.streamEndpointPrefix || '/api/agents/chat/stream/';
     this.bearerToken = config.bearerToken || process.env.HOPGPT_BEARER_TOKEN;
     this.userAgent = config.userAgent || process.env.HOPGPT_USER_AGENT;
     this.cookies = {
@@ -128,6 +129,15 @@ export class HopGPTClient {
    */
   async _sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Detect which browser profile to mimic based on the configured User-Agent.
+   * Shared by sendMessage, startStream, and subscribeStream.
+   * @returns {'firefox'|'chrome'}
+   */
+  _resolveBrowserType() {
+    return this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
   }
 
   /**

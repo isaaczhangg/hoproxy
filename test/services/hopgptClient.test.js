@@ -72,6 +72,32 @@ describe('HopGPTClient', () => {
     });
   });
 
+  describe('_resolveBrowserType()', () => {
+    it('returns "firefox" when userAgent contains Firefox (case-insensitive)', () => {
+      const client = new HopGPTClient({ openidUserId: 'id', userAgent: 'Mozilla/5.0 (Macintosh) Firefox/150.0' });
+      expect(client._resolveBrowserType()).toBe('firefox');
+    });
+
+    it('returns "chrome" when userAgent is missing or not Firefox', () => {
+      const c1 = new HopGPTClient({ openidUserId: 'id', userAgent: undefined });
+      const c2 = new HopGPTClient({ openidUserId: 'id', userAgent: 'Mozilla/5.0 Chrome/120' });
+      expect(c1._resolveBrowserType()).toBe('chrome');
+      expect(c2._resolveBrowserType()).toBe('chrome');
+    });
+  });
+
+  describe('streamEndpointPrefix config', () => {
+    it('defaults to /api/agents/chat/stream/', () => {
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.streamEndpointPrefix).toBe('/api/agents/chat/stream/');
+    });
+
+    it('accepts an override via config', () => {
+      const client = new HopGPTClient({ openidUserId: 'id', streamEndpointPrefix: '/custom/prefix/' });
+      expect(client.streamEndpointPrefix).toBe('/custom/prefix/');
+    });
+  });
+
   it('refreshes tokens and retries on auth errors', async () => {
     const refreshResponse = createMockTLSResponse({
       ok: true,
