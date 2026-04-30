@@ -660,6 +660,72 @@ export class HopGPTClient {
   }
 
   /**
+   * Phase 1 of the HopGPT chat protocol: POST the chat request and parse the
+   * JSON acknowledgment. No retry, no refresh — pure transport.
+   * @param {object} hopGPTRequest - HopGPT-shaped chat request body
+   * @param {object} [requestOptions]
+   * @param {AbortSignal} [requestOptions.signal]
+   * @returns {Promise<{streamId: string, conversationId: string, status: string}>}
+   */
+  async startStream(hopGPTRequest, requestOptions = {}) {
+    if (!hopGPTRequest || typeof hopGPTRequest !== 'object' || Array.isArray(hopGPTRequest)) {
+      throw new Error('startStream requires an object hopGPTRequest');
+    }
+
+    if (requestOptions.signal?.aborted) {
+      throw new Error('Request aborted');
+    }
+
+    const browserType = this._resolveBrowserType();
+    const headers = {
+      ...this.buildBrowserHeaders(browserType),
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+      'Origin': this.baseURL,
+      'Referer': `${this.baseURL}/c/new`
+    };
+    if (this.bearerToken) {
+      headers['Authorization'] = `Bearer ${this.bearerToken}`;
+    }
+    const cookieHeader = this.buildCookieHeader();
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const response = await tlsFetch({
+      url: `${this.baseURL}${this.endpoint}`,
+      method: 'POST',
+      headers,
+      body: hopGPTRequest,
+      browserType
+    });
+
+    if (!response.ok) {
+      const body = await this._readResponseText(response);
+      const retryAfterMs = this._extractRetryAfter(response.headers);
+      throw new HopGPTError(response.status, response.statusText || `HTTP ${response.status}`, body, retryAfterMs);
+    }
+
+    const rawBody = await this._readResponseText(response);
+    let parsed;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch (error) {
+      throw new HopGPTError(502, 'Malformed stream ack from HopGPT', rawBody.slice(0, 500));
+    }
+
+    if (!parsed || typeof parsed.streamId !== 'string' || parsed.streamId.trim().length === 0) {
+      throw new HopGPTError(502, 'Malformed stream ack from HopGPT', rawBody.slice(0, 500));
+    }
+
+    return {
+      streamId: parsed.streamId,
+      conversationId: parsed.conversationId,
+      status: parsed.status
+    };
+  }
+
+  /**
    * Send a message to HopGPT
    * @param {object} hopGPTRequest - Request body in HopGPT format
    * @param {object} requestOptions - Request options
