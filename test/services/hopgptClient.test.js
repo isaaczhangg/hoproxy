@@ -29,6 +29,44 @@ function createMockTLSResponse({
   };
 }
 
+/**
+ * Wire up tlsFetchSpy so that the two-phase chat flow returns an ack on POST
+ * and an SSE body on GET. Tests that need to customize individual phases pass
+ * postOverride / getOverride.
+ *
+ * Callers are responsible for mocking /api/auth/refresh separately when
+ * needed (pass refreshResponse: createMockTLSResponse(...) to install it).
+ */
+function mockChatFlow(tlsFetchSpy, {
+  ackBody = { streamId: 'stream-1', conversationId: 'conv-1', status: 'started' },
+  sseBody = 'event: message\ndata: {"final":true,"conversation":{"conversationId":"conv-1"},"responseMessage":{"content":[{"type":"text","text":"hi"}]}}\n\n',
+  postOverride = null,
+  getOverride = null,
+  refreshResponse = null
+} = {}) {
+  tlsFetchSpy.mockImplementation(async (options) => {
+    if (options.url.endsWith('/api/auth/refresh')) {
+      if (refreshResponse) return refreshResponse;
+      throw new Error('mockChatFlow: /api/auth/refresh hit but no refreshResponse configured');
+    }
+    if (options.url.includes('/api/agents/chat/AnthropicClaude') && options.method === 'POST') {
+      return postOverride ?? createMockTLSResponse({
+        ok: true, status: 200,
+        body: JSON.stringify(ackBody),
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if (options.url.includes('/api/agents/chat/stream/') && options.method === 'GET') {
+      return getOverride ?? createMockTLSResponse({
+        ok: true, status: 200,
+        body: sseBody,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    }
+    throw new Error(`mockChatFlow: unexpected URL ${options.url} (${options.method})`);
+  });
+}
+
 describe('HopGPTClient', () => {
   let tlsFetchSpy;
 
@@ -72,6 +110,32 @@ describe('HopGPTClient', () => {
     });
   });
 
+  describe('_resolveBrowserType()', () => {
+    it('returns "firefox" when userAgent contains Firefox (case-insensitive)', () => {
+      const client = new HopGPTClient({ openidUserId: 'id', userAgent: 'Mozilla/5.0 (Macintosh) Firefox/150.0' });
+      expect(client._resolveBrowserType()).toBe('firefox');
+    });
+
+    it('returns "chrome" when userAgent is missing or not Firefox', () => {
+      const c1 = new HopGPTClient({ openidUserId: 'id', userAgent: undefined });
+      const c2 = new HopGPTClient({ openidUserId: 'id', userAgent: 'Mozilla/5.0 Chrome/120' });
+      expect(c1._resolveBrowserType()).toBe('chrome');
+      expect(c2._resolveBrowserType()).toBe('chrome');
+    });
+  });
+
+  describe('streamEndpointPrefix config', () => {
+    it('defaults to /api/agents/chat/stream/', () => {
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.streamEndpointPrefix).toBe('/api/agents/chat/stream/');
+    });
+
+    it('accepts an override via config', () => {
+      const client = new HopGPTClient({ openidUserId: 'id', streamEndpointPrefix: '/custom/prefix/' });
+      expect(client.streamEndpointPrefix).toBe('/custom/prefix/');
+    });
+  });
+
   it('refreshes tokens and retries on auth errors', async () => {
     const refreshResponse = createMockTLSResponse({
       ok: true,
@@ -81,37 +145,29 @@ describe('HopGPTClient', () => {
         'set-cookie': ['connect.sid=new-session; Path=/;']
       }
     });
-    const successResponse = createMockTLSResponse({
-      ok: true,
-      status: 200,
-      body: 'data: {"type":"text"}\n\n'
-    });
 
-    let refreshCalls = 0;
-    let chatCalls = 0;
-    tlsFetchSpy.mockImplementation(async (options) => {
-      if (options.url.endsWith('/api/auth/refresh')) {
-        refreshCalls++;
-        return refreshResponse;
-      }
-      chatCalls++;
-      return successResponse;
-    });
+    mockChatFlow(tlsFetchSpy, { refreshResponse });
 
     // Use a non-JWT bearer token to trigger proactive refresh
     const client = new HopGPTClient({
       baseURL: 'https://example.com',
       bearerToken: 'old-token',  // Non-JWT triggers proactive refresh
-      connectSid: 'session-id', openidUserId: 'openid-id'
+      connectSid: 'session-id', openidUserId: 'openid-id',
+      streamingTransport: 'tls'
     });
 
     const response = await client.sendMessage({ text: 'hello' });
     expect(response.ok).toBe(true);
     expect(client.bearerToken).toBe('new-token');
     expect(client.cookies.connect_sid).toBe('new-session');
-    // Proactive refresh (1 call) + chat request (1 call) = 2 calls
-    expect(refreshCalls).toBe(1);
-    expect(chatCalls).toBe(1);
+
+    const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude'));
+    const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+    const refreshCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.endsWith('/api/auth/refresh'));
+    // Proactive refresh + 1 POST (startStream) + 1 GET (subscribeStream)
+    expect(refreshCalls.length).toBe(1);
+    expect(postCalls.length).toBe(1);
+    expect(getCalls.length).toBe(1);
   });
 
   it('parses cookies with equals signs in values correctly', async () => {
@@ -175,10 +231,17 @@ describe('HopGPTClient', () => {
         body: 'rate limited',
         headers: { 'retry-after': '1' }
       });
-      const chatSuccessResponse = createMockTLSResponse({
+      const ackResponse = createMockTLSResponse({
         ok: true,
         status: 200,
-        body: 'data: {"type":"text"}\n\n'
+        body: JSON.stringify({ streamId: 'stream-1', conversationId: 'conv-1', status: 'started' }),
+        headers: { 'content-type': 'application/json' }
+      });
+      const sseResponse = createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: 'event: message\ndata: {"final":true,"conversation":{"conversationId":"conv-1"},"responseMessage":{"content":[{"type":"text","text":"hi"}]}}\n\n',
+        headers: { 'content-type': 'text/event-stream' }
       });
       const refreshSuccessResponse = createMockTLSResponse({
         ok: true,
@@ -187,16 +250,22 @@ describe('HopGPTClient', () => {
         headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
-      let chatCalls = 0;
+      let postAttempts = 0;
       tlsFetchSpy.mockImplementation(async (options) => {
         if (options.url.endsWith('/api/auth/refresh')) {
           return refreshSuccessResponse;  // Refresh succeeds with token
         }
-        chatCalls++;
-        if (chatCalls === 1) {
-          return rateLimitResponse;
+        if (options.url.includes('/api/agents/chat/AnthropicClaude') && options.method === 'POST') {
+          postAttempts++;
+          if (postAttempts === 1) {
+            return rateLimitResponse;
+          }
+          return ackResponse;
         }
-        return chatSuccessResponse;
+        if (options.url.includes('/api/agents/chat/stream/') && options.method === 'GET') {
+          return sseResponse;
+        }
+        throw new Error(`unexpected: ${options.method} ${options.url}`);
       });
 
     const client = new HopGPTClient({
@@ -204,13 +273,17 @@ describe('HopGPTClient', () => {
       bearerToken: 'token',  // Non-JWT triggers proactive refresh
       connectSid: 'session-id', openidUserId: 'openid-id',
       rateLimitMaxRetries: 3,
-      rateLimitBaseDelayMs: 10  // Use short delay for tests
+      rateLimitBaseDelayMs: 10,  // Use short delay for tests
+      streamingTransport: 'tls'
     });
     const sleepSpy = vi.spyOn(client, '_sleep').mockResolvedValue();
 
     const response = await client.sendMessage({ text: 'hello' });
     expect(response.ok).toBe(true);
-    expect(chatCalls).toBe(2);  // First fails with 429, second succeeds
+    // First POST fails with 429, second POST succeeds, then one GET for the SSE stream
+    expect(postAttempts).toBe(2);
+    const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+    expect(getCalls.length).toBe(1);
     expect(sleepSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -229,13 +302,16 @@ describe('HopGPTClient', () => {
         headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
-      let chatCalls = 0;
+      let postAttempts = 0;
       tlsFetchSpy.mockImplementation(async (options) => {
         if (options.url.endsWith('/api/auth/refresh')) {
           return refreshSuccessResponse;  // Refresh succeeds with token
         }
-        chatCalls++;
-        return rateLimitResponse;  // Chat always returns 429
+        if (options.url.includes('/api/agents/chat/AnthropicClaude') && options.method === 'POST') {
+          postAttempts++;
+          return rateLimitResponse;  // POST always returns 429
+        }
+        throw new Error(`unexpected: ${options.method} ${options.url}`);
       });
 
     const client = new HopGPTClient({
@@ -243,15 +319,24 @@ describe('HopGPTClient', () => {
       bearerToken: 'token',  // Non-JWT triggers proactive refresh
       connectSid: 'session-id', openidUserId: 'openid-id',
       rateLimitMaxRetries: 2,
-      rateLimitBaseDelayMs: 10
+      rateLimitBaseDelayMs: 10,
+      streamingTransport: 'tls'
     });
     const sleepSpy = vi.spyOn(client, '_sleep').mockResolvedValue();
 
-    await expect(client.sendMessage({ text: 'hello' })).rejects.toThrow(
-      'Rate limit retries exhausted. Please try again later.'
-    );
-    // Initial attempt + 2 retries = 3 chat calls
-    expect(chatCalls).toBe(3);
+    // After exhausting retries, sendMessage rethrows the underlying HopGPTError
+    // from startStream. Its .message is the upstream statusText
+    // ("Too Many Requests"); assert on the error shape instead.
+    let caught;
+    try {
+      await client.sendMessage({ text: 'hello' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HopGPTError);
+    expect(caught.statusCode).toBe(429);
+    // Initial attempt + 2 retries = 3 POST calls
+    expect(postAttempts).toBe(3);
     expect(sleepSpy).toHaveBeenCalledTimes(2);
   });
 
@@ -270,13 +355,16 @@ describe('HopGPTClient', () => {
         headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
       });
 
-      let chatCalls = 0;
+      let postAttempts = 0;
       tlsFetchSpy.mockImplementation(async (options) => {
         if (options.url.endsWith('/api/auth/refresh')) {
           return refreshSuccessResponse;  // Refresh succeeds with token
         }
-        chatCalls++;
-        return rateLimitResponse;
+        if (options.url.includes('/api/agents/chat/AnthropicClaude') && options.method === 'POST') {
+          postAttempts++;
+          return rateLimitResponse;
+        }
+        throw new Error(`unexpected: ${options.method} ${options.url}`);
       });
 
       const client = new HopGPTClient({
@@ -284,14 +372,24 @@ describe('HopGPTClient', () => {
         bearerToken: 'token',  // Non-JWT triggers proactive refresh
         connectSid: 'session-id', openidUserId: 'openid-id',
         rateLimitMaxRetries: 3,
-        rateLimitMaxWaitTimeMs: 10000  // 10 seconds max
+        rateLimitMaxWaitTimeMs: 10000,  // 10 seconds max
+        streamingTransport: 'tls'
       });
 
-      await expect(client.sendMessage({ text: 'hello' })).rejects.toThrow(
-        'Rate limited. Retry after 60 seconds.'
-      );
-      // Should only call chat once since Retry-After exceeds max wait time
-      expect(chatCalls).toBe(1);
+      // With Retry-After=60s exceeding maxWaitTimeMs=10s, sendMessage rethrows
+      // the original HopGPTError immediately without retry. Assert on the
+      // error shape (statusCode + retryAfterMs) instead of its .message.
+      let caught;
+      try {
+        await client.sendMessage({ text: 'hello' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(HopGPTError);
+      expect(caught.statusCode).toBe(429);
+      expect(caught.retryAfterMs).toBe(60000);
+      // Should only POST once since Retry-After exceeds max wait time
+      expect(postAttempts).toBe(1);
     });
 
     it('extracts numeric Retry-After header', () => {
@@ -421,7 +519,8 @@ describe('HopGPTClient', () => {
         baseURL: 'https://example.com',
         bearerToken: 'invalid-token',  // Non-JWT triggers proactive refresh
         connectSid: 'valid-session', openidUserId: 'valid-openid',
-        autoPersist: false
+        autoPersist: false,
+        streamingTransport: 'tls'
       });
 
       await expect(client.sendMessage({ text: 'hello' })).rejects.toThrow(TokenRefreshError);
@@ -539,6 +638,380 @@ describe('HopGPTClient', () => {
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('two-phase retry policy', () => {
+    const SSE_OK = 'event: message\ndata: {"final":true,"conversation":{"conversationId":"conv-1"},"responseMessage":{"content":[{"type":"text","text":"hi"}]}}\n\n';
+
+    function makeRefreshOK() {
+      return createMockTLSResponse({
+        ok: true, status: 200,
+        body: JSON.stringify({ token: 'new-token' }),
+        headers: { 'set-cookie': ['connect.sid=new-session; Path=/;'] }
+      });
+    }
+
+    it('post-ack GET 401 → refresh → GET 200 with SAME streamId (no second POST)', async () => {
+      let getAttempts = 0;
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          getAttempts++;
+          if (getAttempts === 1) return createMockTLSResponse({ ok: false, status: 401, statusText: 'Unauthorized', body: '' });
+          return createMockTLSResponse({
+            ok: true, status: 200, body: SSE_OK,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoRefresh: true, autoPersist: false
+      });
+      const response = await client.sendMessage({ text: 'hi' });
+      expect(response.ok).toBe(true);
+
+      const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude') && o.method === 'POST');
+      const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+      expect(postCalls.length).toBe(1);  // exactly one POST
+      expect(getCalls.length).toBe(2);   // two GETs, same streamId
+      expect(getCalls[0][0].url).toBe('https://example.com/api/agents/chat/stream/stream-abc');
+      expect(getCalls[1][0].url).toBe('https://example.com/api/agents/chat/stream/stream-abc');
+    });
+
+    it('post-ack GET 401 → refresh → GET 401 again → throws; still only one POST', async () => {
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({ ok: false, status: 401, statusText: 'Unauthorized', body: '' });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoRefresh: true, autoPersist: false
+      });
+      await expect(client.sendMessage({ text: 'hi' })).rejects.toMatchObject({ statusCode: 401 });
+
+      const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude') && o.method === 'POST');
+      expect(postCalls.length).toBe(1);  // never re-POSTed
+      // Refresh fires twice: once proactively (non-JWT bearer triggers it before POST)
+      // and once as the post-ack one-shot for the GET 401. isPostAckAuthRetry blocks
+      // further refreshes, so the second GET 401 must NOT trigger a third refresh.
+      const refreshCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.endsWith('/api/auth/refresh'));
+      expect(refreshCalls.length).toBe(2);
+    });
+
+    it('post-ack GET 429 → backoff → GET 200 with SAME streamId (no second POST)', async () => {
+      let getAttempts = 0;
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          getAttempts++;
+          if (getAttempts === 1) return createMockTLSResponse({
+            ok: false, status: 429, statusText: 'Too Many Requests',
+            body: 'slow', headers: { 'retry-after': '1' }
+          });
+          return createMockTLSResponse({
+            ok: true, status: 200, body: SSE_OK,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false,
+        rateLimitMaxRetries: 2, rateLimitBaseDelayMs: 10
+      });
+      vi.spyOn(client, '_sleep').mockResolvedValue();
+      const response = await client.sendMessage({ text: 'hi' });
+      expect(response.ok).toBe(true);
+
+      const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude') && o.method === 'POST');
+      expect(postCalls.length).toBe(1);
+    });
+
+    it('post-ack GET 429 → retries exhausted → throws; only one POST', async () => {
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({
+            ok: false, status: 429, statusText: 'Too Many Requests',
+            body: 'slow', headers: { 'retry-after': '1' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false,
+        rateLimitMaxRetries: 2, rateLimitBaseDelayMs: 10
+      });
+      vi.spyOn(client, '_sleep').mockResolvedValue();
+      await expect(client.sendMessage({ text: 'hi' })).rejects.toMatchObject({ statusCode: 429 });
+
+      // With rateLimitMaxRetries: 2, the GET is attempted 3 times (initial + 2 retries).
+      const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+      expect(getCalls.length).toBe(3);
+      const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude') && o.method === 'POST');
+      expect(postCalls.length).toBe(1);
+    });
+
+    it('pre-ack POST 429 → backoff → POST2 + GET OK (full rerun allowed before ack)', async () => {
+      let postAttempts = 0;
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          postAttempts++;
+          if (postAttempts === 1) return createMockTLSResponse({
+            ok: false, status: 429, statusText: 'Too Many Requests',
+            body: 'slow', headers: { 'retry-after': '1' }
+          });
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({
+            ok: true, status: 200, body: SSE_OK,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false,
+        rateLimitMaxRetries: 2, rateLimitBaseDelayMs: 10
+      });
+      vi.spyOn(client, '_sleep').mockResolvedValue();
+      const response = await client.sendMessage({ text: 'hi' });
+      expect(response.ok).toBe(true);
+      expect(postAttempts).toBe(2);
+    });
+
+    it('pre-ack POST 401 → refresh → POST2 + GET OK', async () => {
+      let postAttempts = 0;
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          postAttempts++;
+          if (postAttempts === 1) return createMockTLSResponse({ ok: false, status: 401, statusText: 'Unauthorized', body: '' });
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({
+            ok: true, status: 200, body: SSE_OK,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoRefresh: true, autoPersist: false
+      });
+      const response = await client.sendMessage({ text: 'hi' });
+      expect(response.ok).toBe(true);
+      expect(postAttempts).toBe(2);
+    });
+
+    it('abort between POST and GET: GET never called', async () => {
+      const controller = new AbortController();
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          controller.abort();  // flip aborted=true after POST resolves
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/')) {
+          throw new Error('GET should not be called after abort');
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false
+      });
+      await expect(client.sendMessage({ text: 'hi' }, { signal: controller.signal }))
+        .rejects.toThrow(/Request aborted/);
+
+      const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+      expect(getCalls.length).toBe(0);
+    });
+
+    it('POST 200 with HTML body (upstream auth page) → 502 /Malformed stream ack/; no GET', async () => {
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: '<html><title>Login required</title></html>',
+            headers: { 'content-type': 'text/html' }
+          });
+        }
+        if (options.url.includes('/stream/')) {
+          throw new Error('GET should not be called after malformed ack');
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false
+      });
+      await expect(client.sendMessage({ text: 'hi' })).rejects.toMatchObject({
+        statusCode: 502,
+        message: expect.stringMatching(/Malformed stream ack/)
+      });
+      const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+      expect(getCalls.length).toBe(0);
+    });
+
+    it('GET 200 with text/html body → 502 /Expected text\\/event-stream/', async () => {
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: '<html>login</html>',
+            headers: { 'content-type': 'text/html' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false
+      });
+      await expect(client.sendMessage({ text: 'hi' })).rejects.toMatchObject({
+        statusCode: 502,
+        message: expect.stringMatching(/Expected text\/event-stream/)
+      });
+    });
+
+    it('GET 200 with empty SSE body returns a response (consumer decides completion)', async () => {
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'stream-abc', conversationId: 'conv-1', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({
+            ok: true, status: 200, body: '',
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false
+      });
+      const response = await client.sendMessage({ text: 'hi' });
+      expect(response.ok).toBe(true);  // client returns; transformer's forceEnd handles downstream
+    });
+
+    it('streamId with reserved characters is URL-encoded in GET URL', async () => {
+      tlsFetchSpy.mockImplementation(async (options) => {
+        if (options.url.endsWith('/api/auth/refresh')) return makeRefreshOK();
+        if (options.url.includes('/AnthropicClaude') && options.method === 'POST') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: JSON.stringify({ streamId: 'foo/bar?x=1', conversationId: 'c', status: 'started' }),
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        if (options.url.includes('/stream/') && options.method === 'GET') {
+          return createMockTLSResponse({
+            ok: true, status: 200,
+            body: 'event: message\ndata: {"final":true,"conversation":{"conversationId":"c"},"responseMessage":{"content":[{"type":"text","text":"hi"}]}}\n\n',
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        }
+        throw new Error(`unexpected: ${options.url}`);
+      });
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        bearerToken: 'token', connectSid: 's', openidUserId: 'o',
+        streamingTransport: 'tls', autoPersist: false
+      });
+      await client.sendMessage({ text: 'hi' });
+
+      const getCall = tlsFetchSpy.mock.calls.find(([o]) => o.url.includes('/stream/'));
+      expect(getCall[0].url).toBe('https://example.com/api/agents/chat/stream/foo%2Fbar%3Fx%3D1');
     });
   });
 });

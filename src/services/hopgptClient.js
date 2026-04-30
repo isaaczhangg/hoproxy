@@ -34,6 +34,7 @@ export class HopGPTClient {
   constructor(config = {}) {
     this.baseURL = config.baseURL || 'https://chat.ai.jh.edu';
     this.endpoint = config.endpoint || '/api/agents/chat/AnthropicClaude';
+    this.streamEndpointPrefix = config.streamEndpointPrefix || '/api/agents/chat/stream/';
     this.bearerToken = config.bearerToken || process.env.HOPGPT_BEARER_TOKEN;
     this.userAgent = config.userAgent || process.env.HOPGPT_USER_AGENT;
     this.cookies = {
@@ -128,6 +129,15 @@ export class HopGPTClient {
    */
   async _sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Detect which browser profile to mimic based on the configured User-Agent.
+   * Shared by sendMessage, startStream, and subscribeStream.
+   * @returns {'firefox'|'chrome'}
+   */
+  _resolveBrowserType() {
+    return this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
   }
 
   /**
@@ -622,17 +632,6 @@ export class HopGPTClient {
     return sanitized;
   }
 
-  async _fetchStream(url, headers, body, signal) {
-    const sanitizedHeaders = this._sanitizeHeadersForFetch(headers);
-
-    return fetch(url, {
-      method: 'POST',
-      headers: sanitizedHeaders,
-      body: JSON.stringify(body),
-      signal
-    });
-  }
-
   async _readResponseText(response) {
     if (!response) {
       return '';
@@ -650,17 +649,175 @@ export class HopGPTClient {
   }
 
   /**
+   * Phase 1 of the HopGPT chat protocol: POST the chat request and parse the
+   * JSON acknowledgment. No retry, no refresh — pure transport.
+   * @param {object} hopGPTRequest - HopGPT-shaped chat request body
+   * @param {object} [requestOptions]
+   * @param {AbortSignal} [requestOptions.signal]
+   * @returns {Promise<{streamId: string, conversationId: string, status: string}>}
+   */
+  async startStream(hopGPTRequest, requestOptions = {}) {
+    if (!hopGPTRequest || typeof hopGPTRequest !== 'object' || Array.isArray(hopGPTRequest)) {
+      throw new Error('startStream requires an object hopGPTRequest');
+    }
+
+    if (requestOptions.signal?.aborted) {
+      throw new Error('Request aborted');
+    }
+
+    const browserType = this._resolveBrowserType();
+    const headers = {
+      ...this.buildBrowserHeaders(browserType),
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+      'Origin': this.baseURL,
+      'Referer': `${this.baseURL}/c/new`
+    };
+    if (this.bearerToken) {
+      headers['Authorization'] = `Bearer ${this.bearerToken}`;
+    }
+    const cookieHeader = this.buildCookieHeader();
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const response = await tlsFetch({
+      url: `${this.baseURL}${this.endpoint}`,
+      method: 'POST',
+      headers,
+      body: hopGPTRequest,
+      browserType
+    });
+
+    if (!response.ok) {
+      const body = await this._readResponseText(response);
+      const retryAfterMs = this._extractRetryAfter(response.headers);
+      throw new HopGPTError(response.status, response.statusText || `HTTP ${response.status}`, body, retryAfterMs);
+    }
+
+    const rawBody = await this._readResponseText(response);
+    let parsed;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch (error) {
+      throw new HopGPTError(502, 'Malformed stream ack from HopGPT', rawBody.slice(0, 500));
+    }
+
+    if (!parsed || typeof parsed.streamId !== 'string' || parsed.streamId.trim().length === 0) {
+      throw new HopGPTError(502, 'Malformed stream ack from HopGPT', rawBody.slice(0, 500));
+    }
+
+    return {
+      streamId: parsed.streamId,
+      conversationId: parsed.conversationId,
+      status: parsed.status
+    };
+  }
+
+  /**
+   * Phase 2 of the HopGPT chat protocol: subscribe to the SSE stream for a
+   * previously acknowledged streamId. Returns a fetch-like Response with a
+   * ReadableStream body for SSE parsing. No retry, no refresh — pure transport.
+   * @param {string} streamId - The streamId returned by startStream()
+   * @param {object} [requestOptions]
+   * @param {AbortSignal} [requestOptions.signal]
+   * @returns {Promise<Response|{ok,status,statusText,headers,body,text,json,_rawBody}>}
+   */
+  async subscribeStream(streamId, requestOptions = {}) {
+    if (typeof streamId !== 'string' || streamId.trim().length === 0) {
+      throw new Error('subscribeStream requires a non-empty streamId');
+    }
+
+    if (requestOptions.signal?.aborted) {
+      throw new Error('Request aborted');
+    }
+
+    const browserType = this._resolveBrowserType();
+    const headers = {
+      ...this.buildBrowserHeaders(browserType),
+      'Accept': '*/*',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Referer': `${this.baseURL}/c/new`
+    };
+    if (this.bearerToken) {
+      headers['Authorization'] = `Bearer ${this.bearerToken}`;
+    }
+    const cookieHeader = this.buildCookieHeader();
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const url = `${this.baseURL}${this.streamEndpointPrefix}${encodeURIComponent(streamId)}`;
+
+    let response;
+    let usedFetch = false;
+
+    if (this._shouldUseFetchForStreaming()) {
+      try {
+        response = await fetch(url, {
+          method: 'GET',
+          headers: this._sanitizeHeadersForFetch(headers),
+          signal: requestOptions.signal
+        });
+        usedFetch = true;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          throw error;
+        }
+        log.debug('subscribeStream fetch failed, falling back to tlsFetch', { error: error.message });
+      }
+    }
+
+    if (!usedFetch) {
+      response = await tlsFetch({
+        url,
+        method: 'GET',
+        headers,
+        browserType
+      });
+    }
+
+    if (!response.ok) {
+      const body = await this._readResponseText(response);
+      const retryAfterMs = this._extractRetryAfter(response.headers);
+      throw new HopGPTError(response.status, response.statusText || `HTTP ${response.status}`, body, retryAfterMs);
+    }
+
+    const contentType = (typeof response.headers?.get === 'function'
+      ? response.headers.get('content-type')
+      : response.headers?.['content-type'] || response.headers?.['Content-Type']) || '';
+    const normalizedType = contentType.trim().toLowerCase();
+    if (!normalizedType.startsWith('text/event-stream')) {
+      const body = await this._readResponseText(response);
+      throw new HopGPTError(
+        502,
+        `Expected text/event-stream from stream endpoint, got: ${contentType || '<missing>'}`,
+        body.slice(0, 500)
+      );
+    }
+
+    if (usedFetch) {
+      return response;
+    }
+    return this._createStreamResponse(response);
+  }
+
+  /**
    * Send a message to HopGPT
    * @param {object} hopGPTRequest - Request body in HopGPT format
    * @param {object} requestOptions - Request options
    * @param {object} retryState - Internal retry state
    * @returns {Response} Fetch-like response object with body as string (SSE data)
    */
-  async sendMessage(
-    hopGPTRequest,
-    requestOptions = {},
-    retryState = { isAuthRetry: false, rateLimitAttempt: 0 }
-  ) {
+  async sendMessage(hopGPTRequest, requestOptions = {}, retryState = {}) {
+    retryState = {
+      isAuthRetry: false,
+      rateLimitAttempt: 0,
+      isPostAckAuthRetry: false,
+      postAckRateLimitAttempt: 0,
+      ...retryState
+    };
     if (!retryState.isAuthRetry) {
       const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
       if (tokenInfo && tokenInfo.expiresInSeconds <= this.proactiveRefreshBufferSec + 60) {
@@ -672,143 +829,109 @@ export class HopGPTClient {
       }
     }
 
-    const url = `${this.baseURL}${this.endpoint}`;
+    const signal = requestOptions.signal;
 
-    // Detect browser type from User-Agent
-    const browserType = this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
-
-    // Start with browser-like headers to pass Cloudflare
-    // Accept: */* matches real browser behavior for this endpoint (from HAR capture)
-    const headers = {
-      ...this.buildBrowserHeaders(browserType),
-      'Content-Type': 'application/json',
-      'Accept': '*/*',
-      'Origin': this.baseURL,
-      'Referer': `${this.baseURL}/c/new`
-    };
-
-    const isStreaming = requestOptions.stream === true;
-    const abortSignal = requestOptions.signal;
-    if (isStreaming) {
-      headers['Accept'] = 'text/event-stream';
-      headers['Cache-Control'] = 'no-cache';
-      headers['Pragma'] = 'no-cache';
-    }
-
-    // Add Bearer token if configured
-    if (this.bearerToken) {
-      headers['Authorization'] = `Bearer ${this.bearerToken}`;
-    }
-
-    // Add cookies if configured
-    const cookieHeader = this.buildCookieHeader();
-    if (cookieHeader) {
-      headers['Cookie'] = cookieHeader;
-    }
-
-    let useFetchForStreaming = isStreaming && this._shouldUseFetchForStreaming();
-    let response;
-
-    if (useFetchForStreaming) {
-      try {
-        if (abortSignal?.aborted) {
-          throw new Error('Request aborted');
-        }
-        response = await this._fetchStream(url, headers, hopGPTRequest, abortSignal);
-      } catch (error) {
-        useFetchForStreaming = false;
-        log.debug('Streaming fetch failed, falling back to TLS client', { error: error.message });
-      }
-    }
-
-    if (!useFetchForStreaming) {
-      if (abortSignal?.aborted) {
-        throw new Error('Request aborted');
-      }
-      response = await tlsFetch({
-        url,
-        method: 'POST',
-        headers,
-        body: hopGPTRequest,
-        browserType
-      });
-    }
-
-    if (!response.ok) {
-      const errorText = await this._readResponseText(response);
-
-      // Handle rate limiting (429)
-      if (response.status === 429) {
-        const retryAfterMs = this._extractRetryAfter(response.headers);
+    // ----- Phase 1: POST (pre-ack). Failures here rerun the whole sequence. -----
+    let ack;
+    try {
+      ack = await this.startStream(hopGPTRequest, { signal });
+    } catch (error) {
+      if (error instanceof HopGPTError && error.statusCode === 429) {
         const { rateLimitAttempt } = retryState;
-
-        log.warn('Rate limited (429)', { attempt: `${rateLimitAttempt + 1}/${this.rateLimitConfig.maxRetries}`, retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified' });
-
-        // Check if we should retry
-        const canRetry = rateLimitAttempt < this.rateLimitConfig.maxRetries;
-        const waitTime = this._calculateBackoffDelay(rateLimitAttempt, retryAfterMs);
-
-        // If Retry-After exceeds our max wait time, don't retry
+        const retryAfterMs = error.retryAfterMs ?? null;
+        log.warn('Rate limited on POST (pre-ack)', {
+          attempt: `${rateLimitAttempt + 1}/${this.rateLimitConfig.maxRetries}`,
+          retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified'
+        });
         if (retryAfterMs !== null && retryAfterMs > this.rateLimitConfig.maxWaitTimeMs) {
-          log.warn('Rate limit wait time exceeds max', { waitTime: `${retryAfterMs}ms`, maxWait: `${this.rateLimitConfig.maxWaitTimeMs}ms` });
-          throw new HopGPTError(
-            response.status,
-            `Rate limited. Retry after ${Math.ceil(retryAfterMs / 1000)} seconds.`,
-            errorText,
-            retryAfterMs
-          );
+          throw error;
         }
-
-        if (canRetry) {
-          log.debug('Waiting before retry', { waitTime: `${waitTime}ms` });
+        if (rateLimitAttempt < this.rateLimitConfig.maxRetries) {
+          const waitTime = this._calculateBackoffDelay(rateLimitAttempt, retryAfterMs);
           await this._sleep(waitTime);
-
           return this.sendMessage(hopGPTRequest, requestOptions, {
             ...retryState,
             rateLimitAttempt: rateLimitAttempt + 1
           });
         }
-
-        // Retries exhausted
-        log.error('Rate limit retries exhausted', { attempts: rateLimitAttempt + 1 });
-        throw new HopGPTError(
-          response.status,
-          'Rate limit retries exhausted. Please try again later.',
-          errorText,
-          retryAfterMs
-        );
+        log.error('Rate limit retries exhausted on POST (pre-ack)', { attempts: rateLimitAttempt + 1 });
+        throw error;
       }
-
-      // Check if this is an auth error and we can retry
-      if ((response.status === 401 || response.status === 403) && this.autoRefresh && !retryState.isAuthRetry) {
-        const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
-        log.warn('Auth error', { status: response.status });
-        log.debug('Auth error details', { body: errorText, tokenInfo: tokenInfo ? `expires in ${tokenInfo.expiresInSeconds}s, expired: ${tokenInfo.isExpired}` : 'no valid token' });
-        log.info('Attempting token refresh');
-
+      if (error instanceof HopGPTError &&
+          (error.statusCode === 401 || error.statusCode === 403) &&
+          this.autoRefresh &&
+          !retryState.isAuthRetry) {
+        log.warn('Auth error on POST (pre-ack); attempting refresh', { status: error.statusCode });
         const refreshed = await this.refreshTokens();
         if (refreshed) {
-          log.info('Retrying request with new token');
+          log.info('Retrying POST (pre-ack) with refreshed token');
           return this.sendMessage(hopGPTRequest, requestOptions, { ...retryState, isAuthRetry: true });
-        } else {
-          log.warn('Token refresh failed, not retrying');
         }
+        log.warn('Token refresh failed; not retrying POST (pre-ack)');
       }
-
-      throw new HopGPTError(
-        response.status,
-        `HopGPT request failed: ${response.status} ${response.statusText}`,
-        errorText
-      );
+      throw error;
     }
 
-    if (useFetchForStreaming) {
-      return response;
+    if (signal?.aborted) {
+      throw new Error('Request aborted');
     }
 
-    // Return a response-like object that the SSE parser can work with
-    // The body is the SSE text, we'll create a readable stream from it
-    return this._createStreamResponse(response);
+    // ----- Phase 2: GET (post-ack). Failures retry GET only, same streamId. -----
+    return this._subscribeWithRetry(ack, requestOptions, retryState);
+  }
+
+  /**
+   * Post-ack retry wrapper around subscribeStream. Never re-POSTs; reuses the
+   * same streamId across retries. Ref: spec §"Post-ack error handling".
+   * @private
+   */
+  async _subscribeWithRetry(ack, requestOptions, retryState) {
+    const signal = requestOptions.signal;
+    try {
+      return await this.subscribeStream(ack.streamId, { signal });
+    } catch (error) {
+      if (error instanceof HopGPTError && error.statusCode === 429) {
+        const attempt = retryState.postAckRateLimitAttempt;
+        const retryAfterMs = error.retryAfterMs ?? null;
+        log.warn('Rate limited on GET (post-ack)', {
+          attempt: `${attempt + 1}/${this.rateLimitConfig.maxRetries}`,
+          retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified',
+          streamId: ack.streamId
+        });
+        if (retryAfterMs !== null && retryAfterMs > this.rateLimitConfig.maxWaitTimeMs) {
+          throw error;
+        }
+        if (attempt < this.rateLimitConfig.maxRetries) {
+          const waitTime = this._calculateBackoffDelay(attempt, retryAfterMs);
+          await this._sleep(waitTime);
+          return this._subscribeWithRetry(ack, requestOptions, {
+            ...retryState,
+            postAckRateLimitAttempt: attempt + 1
+          });
+        }
+        log.error('Rate limit retries exhausted on GET (post-ack); NOT re-POSTing', {
+          attempts: attempt + 1,
+          streamId: ack.streamId
+        });
+        throw error;
+      }
+      if (error instanceof HopGPTError &&
+          (error.statusCode === 401 || error.statusCode === 403) &&
+          this.autoRefresh &&
+          !retryState.isPostAckAuthRetry) {
+        log.warn('Auth error on GET (post-ack); attempting refresh (GET-only retry)', {
+          status: error.statusCode,
+          streamId: ack.streamId
+        });
+        const refreshed = await this.refreshTokens();
+        if (refreshed) {
+          log.info('Retrying GET with refreshed token, reusing streamId', { streamId: ack.streamId });
+          return this._subscribeWithRetry(ack, requestOptions, { ...retryState, isPostAckAuthRetry: true });
+        }
+        log.warn('Token refresh failed; not retrying GET (post-ack)');
+      }
+      throw error;
+    }
   }
 
   /**

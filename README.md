@@ -1,95 +1,29 @@
-# HopGPT Anthropic API Proxy
+# HoProxy
 
-A Node.js/Express proxy server that exposes Anthropic-compatible API endpoints and translates requests to the HopGPT backend at `https://chat.ai.jh.edu`. Use it to connect Claude Code, OpenCode, or any Anthropic SDK client to HopGPT.
+**Anthropic-compatible API proxy for HopGPT (`https://chat.ai.jh.edu`).**
 
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Client Setup](#client-setup)
-  - [Claude Code](#claude-code)
-  - [OpenCode](#opencode)
-  - [Anthropic SDK](#anthropic-sdk)
-- [Available Models](#available-models)
-- [API Reference](#api-reference)
-- [Configuration](#configuration)
-  - [Environment Variables](#environment-variables)
-  - [Conversation State](#conversation-state)
-  - [Authentication](#authentication)
-- [Tool Use Support](#tool-use-support)
-- [Troubleshooting](#troubleshooting)
-- [Project Structure](#project-structure)
-- [Testing](#testing)
-- [License](#license)
-
----
+Point any Anthropic SDK client — Claude Code, OpenCode, the Python/JS SDKs — at a local endpoint that speaks the Messages API, and HoProxy translates requests to HopGPT under the hood.
 
 ## Quick Start
 
-**Requirements:** Node.js 18+
+Requires **Node.js 18+**.
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Extract credentials (opens browser for login)
-npm run extract
-
-# 3. Start the proxy
+npm run extract   # opens a browser for one-time HopGPT login
 npm start
 ```
 
-The proxy listens on `http://localhost:3001` by default.
+The proxy listens on `http://localhost:3001`. If extraction completes without errors, you're done — jump to **[Client Setup](#client-setup)**.
 
-### Manual Credential Setup
+> **Manual credential setup.** If `npm run extract` can't drive a browser on your machine, see [Appendix A: Manual credential setup](#appendix-a-manual-credential-setup).
 
-If automatic extraction fails, create a `.env` file manually:
+## Client Setup
 
-1. Open HopGPT (`https://chat.ai.jh.edu`) in your browser
-2. DevTools (F12) → Network tab → send a message
-3. Inspect the request to `/api/agents/chat/AnthropicClaude`
-4. Copy values from headers/cookies:
+### Claude Code
 
-```bash
-# .env (minimum required)
-HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
+Install Claude Code (`curl -fsSL https://claude.ai/install.sh | bash` or `npm i -g @anthropic-ai/claude-code`), then point it at HoProxy via `~/.claude/settings.json`:
 
-# Recommended (auto-obtained via openid_user_id)
-HOPGPT_BEARER_TOKEN=eyJhbGciOiJIUzI1NiIs...
-HOPGPT_USER_AGENT="Mozilla/5.0 ..."
-HOPGPT_COOKIE_CONNECT_SID=s%3A...
-HOPGPT_COOKIE_CF_CLEARANCE=...
-HOPGPT_COOKIE_CF_BM=...
-HOPGPT_COOKIE_TOKEN_PROVIDER=openid
-```
-
----
-
-## Claude Code Setup
-
-Configure Claude Code to talk to HoProxy's local Anthropic-compatible endpoint.
-
-### 1) Install Claude Code
-
-**macOS/Linux (recommended):**
-```bash
-curl -fsSL https://claude.ai/install.sh | bash
-```
-
-**npm (requires Node.js 18+):**
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-### 2) Extract HopGPT credentials
-
-If you have not already done this in the main setup, run:
-```bash
-npm run extract
-```
-
-### 3) Configure Claude Code `settings.json`
-
-Create or edit `~/.claude/settings.json`:
 ```json
 {
   "env": {
@@ -100,204 +34,43 @@ Create or edit `~/.claude/settings.json`:
 }
 ```
 
-Restart Claude Code after editing. HoProxy does not validate the auth token, but Claude Code requires a non-empty value.
+Restart Claude Code. HoProxy ignores the auth token, but Claude Code requires a non-empty value. Equivalent shell env vars (`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`) work as well.
 
-### 4) Environment variable configuration
+### OpenCode
 
-If you prefer shell environment variables instead of `settings.json`:
-```bash
-export ANTHROPIC_AUTH_TOKEN=test
-export ANTHROPIC_BASE_URL=http://localhost:3001
-export ANTHROPIC_MODEL=claude-sonnet-4-5
-```
+Point OpenCode at `http://localhost:3001` as an Anthropic-compatible provider. HoProxy handles OpenCode's tool-use flow out of the box — it injects tool definitions into the prompt, parses the model's XML tool calls, and returns standard Anthropic `tool_use` blocks. If your client parses XML tool calls directly from the text stream instead, see [Appendix B: MCP passthrough mode](#appendix-b-mcp-passthrough-mode).
 
-### 5) Troubleshooting common issues
+### Anthropic SDK
 
-- **Connection refused**: Ensure HoProxy is running and listening on `http://localhost:3001`.
-- **`authentication_error` from HoProxy**: Your HopGPT cookies/tokens are missing or expired. Re-run `npm run extract` and restart the server.
-- **401/403 from HopGPT**: The `openid_user_id` JWT likely expired (~7-day lifespan); re-authenticate with `npm run extract`.
-- **Cloudflare "Attention Required" page**: Your Cloudflare cookies or user agent are missing/expired. Re-run `npm run extract` and restart the server.
-- **Streaming output arrives all at once**: Ensure `HOPGPT_STREAMING_TRANSPORT=fetch` (default). If Cloudflare blocks streaming with native fetch, set `HOPGPT_STREAMING_TRANSPORT=tls` to fall back to non-streaming TLS.
-- **Model warning or not found**: Use a supported model from the list below or call `GET /v1/models`.
-- **Claude Code still calling Anthropic**: Confirm `ANTHROPIC_BASE_URL` is set and restart Claude Code.
-
-### 6) Available models and their capabilities
-
-| Model (canonical) | Capability notes |
-|-------------------|------------------|
-| `claude-opus-4-5` | Highest quality; best for complex reasoning and long-form outputs. |
-| `claude-sonnet-4-5` | Balanced speed/quality; good default for most tasks. |
-| `claude-haiku-4-5` | Fastest model; best for low-latency tasks. |
-
-Aliases accepted by the proxy include:
-- `claude-opus-4.5`, `claude-opus-4-5-thinking`, `claude-opus-4.5-thinking`
-- `claude-sonnet-4.5`, `claude-sonnet-4-5-thinking`, `claude-sonnet-4.5-thinking`
-- `claude-haiku-4.5`, `claude-haiku-4-5-thinking`, `claude-haiku-4.5-thinking`
-
-**Note:** The `-thinking` suffix is accepted for input but not included in canonical model names returned by `/v1/models`. The proxy enables thinking mode internally based on model capabilities.
-
-## OpenCode Setup
-
-OpenCode supports the Anthropic tool use protocol. HoProxy handles the full tool use flow:
-
-1. **Tool Injection**: When tools are sent in the Anthropic request, HoProxy injects tool definitions into the prompt so the model knows how to call them
-2. **XML Parsing**: When the model outputs XML-formatted tool calls (e.g., `<tool_call>`), HoProxy parses them and converts to standard Anthropic `tool_use` blocks
-3. **Result Handling**: OpenCode executes the tools and sends `tool_result` messages back
-
-### How Tool Injection Works
-
-Since HopGPT doesn't natively pass Anthropic tools to the Claude model, HoProxy injects a tool prompt that:
-- Describes all available tools and their parameters
-- Instructs the model to output tool calls in `<tool_call>` XML format
-- The XML is then parsed and converted to Anthropic `tool_use` blocks
-
-### Supported Tool Call Formats
-
-HoProxy supports four XML formats for tool calls in model responses:
-
-**1. MCP Tool Call Format:**
-```xml
-<mcp_tool_call>
-<server_name>opencode</server_name>
-<tool_name>Edit</tool_name>
-<arguments>
-{"file_path": "example.ts", "new_string": "..."}
-</arguments>
-</mcp_tool_call>
-```
-
-**2. Function Calls Format (OpenCode):**
-```xml
-<function_calls>
-<invoke name="Glob">
-<parameter name="pattern">**/*.ts</parameter>
-</invoke>
-<invoke name="Read">
-<parameter name="file_path">README.md</parameter>
-</invoke>
-</function_calls>
-```
-
-**3. Claude Code Function Calls Format (antml: namespace):**
-```xml
-<function_calls>
-<invoke name="Bash">
-<parameter name="command">git status</parameter>
-</invoke>
-<invoke name="Read">
-<parameter name="file_path">README.md</parameter>
-</invoke>
-</function_calls>
-```
-
-**4. Tool Call JSON Format (OpenCode):**
-```xml
-<tool_call>
-{"name": "Task", "parameters": {"task": "Explore the codebase", "agent": "explorer"}}
-</tool_call>
-```
-
-All formats are automatically parsed and converted to Anthropic `tool_use` blocks, which are then returned to the client for execution.
-
-### MCP Tool Call Passthrough
-
-If your client (like OpenCode) parses and executes tool calls directly from XML blocks in the text stream instead of using Anthropic `tool_use` blocks, enable passthrough mode:
-
-**Option A: HTTP Header**
-```bash
-curl http://localhost:3001/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-mcp-passthrough: true" \
-  -d '{ ... }'
-```
-
-**Option B: Request metadata**
-```json
-{
-  "model": "claude-sonnet-4-5-thinking",
-  "metadata": {
-    "mcp_passthrough": true
-  },
-  "messages": [...]
-}
-```
-
-When passthrough mode is enabled:
-- Tool call XML blocks remain in the text response for the client to parse
-- No `tool_use` blocks are generated from the XML
-- The client can intercept and execute the tool calls directly
-
-### Troubleshooting Tool Calls
-
-If tool calls aren't working (XML is displayed instead of executed):
-
-1. **Verify passthrough mode is disabled** - Passthrough mode should only be used for clients that parse XML directly. Most clients (including OpenCode) should use the default mode where XML is converted to `tool_use` blocks.
-
-2. **Enable debug logging** to see what's happening:
-   ```bash
-   HOPGPT_DEBUG=true npm start
-   ```
-   This will log:
-   - Incoming HopGPT events
-   - Detected tool call XML
-   - Parsed tool calls
-
-3. **Test the proxy directly** with curl:
-   ```bash
-   curl http://localhost:3001/v1/messages \
-     -H "Content-Type: application/json" \
-     -d '{
-       "model": "claude-sonnet-4-5-thinking",
-       "max_tokens": 1024,
-       "messages": [{"role": "user", "content": "What is 2+2?"}]
-     }'
-   ```
-   Check that the response contains `tool_use` blocks (not raw XML).
-
-4. **Verify your client is handling tool_use blocks** - The proxy outputs standard Anthropic `tool_use` blocks. Your client must execute them and send `tool_result` messages to continue the agentic loop.
-
-## Usage
-
-### With Anthropic SDK (Python)
+Python:
 
 ```python
 from anthropic import Anthropic
 
-client = Anthropic(
-    api_key="dummy",  # Not used, but required by the SDK
-    base_url="http://localhost:3001"  # Or set ANTHROPIC_BASE_URL
-)
-
-message = client.messages.create(
+client = Anthropic(api_key="dummy", base_url="http://localhost:3001")
+msg = client.messages.create(
     model="claude-sonnet-4-5",
     max_tokens=1024,
-    messages=[{"role": "user", "content": "Hello!"}]
+    messages=[{"role": "user", "content": "Hello!"}],
 )
-print(message.content)
+print(msg.content)
 ```
 
-### With Anthropic SDK (JavaScript)
+JavaScript:
 
 ```javascript
 import Anthropic from '@anthropic-ai/sdk';
 
-const client = new Anthropic({
-  apiKey: process.env['ANTHROPIC_API_KEY'] || 'dummy',
-  baseURL: 'http://localhost:3001'
-});
-
-const message = await client.messages.create({
+const client = new Anthropic({ apiKey: 'dummy', baseURL: 'http://localhost:3001' });
+const msg = await client.messages.create({
   model: 'claude-sonnet-4-5',
   max_tokens: 1024,
-  messages: [{ role: 'user', content: 'Hello!' }]
+  messages: [{ role: 'user', content: 'Hello!' }],
 });
-
-console.log(message.content);
+console.log(msg.content);
 ```
 
-If your SDK version does not support `baseURL`, use the `curl` example below instead.
-
-### With curl
+curl (streaming):
 
 ```bash
 curl http://localhost:3001/v1/messages \
@@ -305,156 +78,208 @@ curl http://localhost:3001/v1/messages \
   -d '{
     "model": "claude-sonnet-4-5",
     "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### Streaming
-
-```bash
-curl http://localhost:3001/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-5-thinking",
-    "max_tokens": 1024,
     "stream": true,
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-### List available models
+## Models
+
+| Canonical ID          | Use case                                            |
+| --------------------- | --------------------------------------------------- |
+| `claude-opus-4-5`     | Highest quality; complex reasoning, long-form work. |
+| `claude-sonnet-4-5`   | Balanced speed/quality; good default.               |
+| `claude-haiku-4-5`    | Fastest; low-latency tasks.                         |
+
+The proxy also accepts dotted variants (`claude-sonnet-4.5`) and `-thinking` suffixes (`claude-sonnet-4-5-thinking`). The `-thinking` form never appears in canonical responses — thinking mode is enabled internally based on the model.
+
+## API
+
+| Endpoint                      | Method | Purpose                                            |
+| ----------------------------- | ------ | -------------------------------------------------- |
+| `/v1/messages`                | POST   | Anthropic Messages API (streaming + non-streaming) |
+| `/v1/messages/count_tokens`   | POST   | Token counting — returns 501 Not Implemented       |
+| `/v1/models`                  | GET    | List available models                              |
+| `/v1/models/:id`              | GET    | Fetch one model                                    |
+| `/refresh-token`              | POST   | Force a HopGPT token refresh                       |
+| `/token-status`               | GET    | Token expiry summary                               |
+| `/token-debug`                | GET    | Detailed token diagnostics (memory vs `.env`)      |
+| `/health`                     | GET    | Health check                                       |
+
+## Configuration
+
+### Environment variables
+
+| Variable                                    | Default     | Description                                                                                                         |
+| ------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                      | `3001`      | Server port.                                                                                                        |
+| `HOPGPT_COOKIE_OPENID_USER_ID`              | —           | **Required.** OIDC-issued refresh JWT (the `openid_user_id` browser cookie). Used to mint bearer tokens.            |
+| `HOPGPT_BEARER_TOKEN`                       | —           | JWT bearer; auto-minted from `openid_user_id` if missing.                                                            |
+| `HOPGPT_COOKIE_CONNECT_SID`                 | —           | Express session cookie; rotated on every token refresh.                                                              |
+| `HOPGPT_COOKIE_CF_CLEARANCE`                | —           | Cloudflare clearance cookie.                                                                                         |
+| `HOPGPT_COOKIE_CF_BM`                       | —           | Cloudflare bot management cookie.                                                                                    |
+| `HOPGPT_COOKIE_TOKEN_PROVIDER`              | `librechat` | Token provider; HopGPT production uses `openid`.                                                                     |
+| `HOPGPT_USER_AGENT`                         | —           | Browser `User-Agent`. Helps satisfy Cloudflare.                                                                      |
+| `HOPGPT_STREAMING_TRANSPORT`                | `fetch`     | `fetch` or `tls`. Switch to `tls` if Cloudflare blocks streaming on native fetch.                                    |
+| `CONVERSATION_TTL_MS`                       | `21600000`  | In-memory conversation TTL (ms); default 6h.                                                                         |
+| `SIGNATURE_CACHE_TTL_MS`                    | `3600000`   | Tool-signature cache TTL (ms); default 1h.                                                                           |
+| `HOPGPT_TOOL_CALL_BUFFER_SIZE`              | `1000000`   | Max buffer for streaming tool-call detection (bytes).                                                                |
+| `HOPGPT_TOOL_CALL_BUFFER_WARN_THRESHOLD`    | `50000`     | Buffer size that triggers warning logs (bytes).                                                                      |
+| `HOPGPT_TOOL_CALL_BUFFER_WARN_STEP`         | `200000`    | Increment between subsequent buffer warnings (bytes).                                                                |
+| `HOPGPT_DEBUG`                              | unset       | Extra debug logging.                                                                                                 |
+| `HOPGPT_LOG_LEVEL`                          | `info`      | `debug` \| `info` \| `warn` \| `error` \| `silent`.                                                                 |
+| `HOPGPT_LOG_NO_COLOR` / `NO_COLOR`          | unset       | Disable ANSI color in logs.                                                                                          |
+
+Extraction-only: `HOPGPT_PUPPETEER_CHANNEL`, `HOPGPT_PUPPETEER_USER_DATA_DIR`.
+
+With auto-refresh on, the only variable you *must* set is `HOPGPT_COOKIE_OPENID_USER_ID`. Everything else is populated on first request.
+
+### Authentication
+
+HoProxy handles two refresh scopes:
+
+- **Bearer token** (~75 min lifespan). Auto-refreshed on 401/403 by calling HopGPT's `/api/auth/refresh` with the `openid_user_id` cookie.
+- **`openid_user_id`** (~7-day lifespan). When this expires, run `npm run extract` to re-authenticate.
+
+The `connect.sid` session cookie is rotated server-side on every refresh and tracked alongside the credential; Cloudflare cookies are best-effort and may need re-extraction on blocks.
+
+### Conversation state
+
+HoProxy keeps HopGPT conversation threading in memory so multi-turn calls reuse context:
+
+- Pass a stable session key via the `X-Session-Id` request header or any of `metadata.{session_id,sessionId,conversation_id,conversationId}`.
+- Omit it and the proxy generates one, echoed back as `X-Session-Id` on the response.
+- Reset a conversation with `X-Conversation-Reset: true` or `metadata.{conversation_reset,reset,new_conversation}`.
+
+State expires after `CONVERSATION_TTL_MS` (6h default).
+
+## Troubleshooting
+
+| Symptom                                         | Fix                                                                                                                   |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Connection refused                              | Proxy isn't running. `npm start`.                                                                                      |
+| `authentication_error` from HoProxy             | Re-run `npm run extract`, then restart the server.                                                                     |
+| 401/403 from HopGPT                             | `openid_user_id` JWT expired (~7-day lifespan). Re-run `npm run extract`.                                              |
+| Cloudflare "Attention Required" page            | CF cookies or UA stale. Re-run `npm run extract` and restart.                                                          |
+| Streaming output arrives all at once            | Try `HOPGPT_STREAMING_TRANSPORT=tls` if Cloudflare is blocking native fetch.                                            |
+| Model warning / not found                       | Use a canonical model from the table above, or hit `GET /v1/models`.                                                   |
+| Claude Code still calls `api.anthropic.com`     | `ANTHROPIC_BASE_URL` isn't being read. Double-check `~/.claude/settings.json` and restart Claude Code.                 |
+| Tool-call XML rendered as text                  | Passthrough mode is on. See [Appendix B](#appendix-b-mcp-passthrough-mode) — the default (off) converts XML to `tool_use`. |
+
+Need deeper insight? `HOPGPT_DEBUG=true npm start` logs incoming HopGPT events, detected tool-call XML, and parsed tool calls. `GET /token-debug` compares in-memory auth state against `.env`.
+
+## Streaming protocol
+
+HopGPT uses a two-phase chat protocol. HoProxy POSTs `/api/agents/chat/AnthropicClaude` to get a `{streamId, conversationId, status:"started"}` ack, then GETs `/api/agents/chat/stream/{streamId}` for the SSE event stream. Retry policy splits by phase: POST 401/403/429 fully re-runs the sequence; GET 401/403/429 retries the subscription only (reusing the same `streamId`) to avoid duplicating the user's persisted message on HopGPT's server. No user-visible configuration changes.
+
+## Testing
 
 ```bash
-curl http://localhost:3001/v1/models
+npm test            # run once
+npm run test:watch  # watch mode
 ```
-
-### Manually refresh the HopGPT token
-
-```bash
-curl -X POST http://localhost:3001/refresh-token
-```
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `PORT` | Server port (default: 3001) |
-| `HOPGPT_BEARER_TOKEN` | JWT Bearer token from Authorization header (optional if `HOPGPT_COOKIE_OPENID_USER_ID` is set; auto-minted on first request) |
-| `HOPGPT_USER_AGENT` | Browser User-Agent header (recommended to satisfy Cloudflare) |
-| `HOPGPT_COOKIE_OPENID_USER_ID` | **Required.** OIDC-issued refresh JWT. Named `openid_user_id` in the browser cookie jar; used as the refresh credential. |
-| `HOPGPT_COOKIE_CONNECT_SID` | Express session cookie (recommended; sent alongside the refresh credential) |
-| `HOPGPT_COOKIE_CF_CLEARANCE` | Cloudflare clearance cookie (recommended) |
-| `HOPGPT_COOKIE_CF_BM` | Cloudflare bot management cookie (optional; often not set on fresh sessions) |
-| `HOPGPT_COOKIE_TOKEN_PROVIDER` | Token provider; current value in production is `openid` (falls back to `librechat` if unset) |
-| `CONVERSATION_TTL_MS` | In-memory conversation state TTL in ms (default: 21600000) |
-| `HOPGPT_DEBUG` | Enable debug logging for troubleshooting (default: unset) |
-| `HOPGPT_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error`, `silent` (default: `info`) |
-| `HOPGPT_LOG_NO_COLOR` | Disable colored log output (default: unset) |
-| `NO_COLOR` | Standard env var to disable colored output (default: unset) |
-| `HOPGPT_STREAMING_TRANSPORT` | Streaming transport: `fetch` or `tls` (default: `fetch`) |
-| `SIGNATURE_CACHE_TTL_MS` | Tool signature cache TTL in ms (default: 3600000) |
-| `HOPGPT_TOOL_CALL_BUFFER_SIZE` | Max buffer size for streaming tool call detection (default: 1000000) |
-| `HOPGPT_TOOL_CALL_BUFFER_WARN_THRESHOLD` | Buffer size that triggers warning logs (default: 50000) |
-| `HOPGPT_TOOL_CALL_BUFFER_WARN_STEP` | Increment for subsequent buffer warnings (default: 200000) |
-
-Extraction-only:
-- `HOPGPT_PUPPETEER_CHANNEL`
-- `HOPGPT_PUPPETEER_USER_DATA_DIR`
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/messages` | POST | Anthropic Messages API (streaming and non-streaming) |
-| `/v1/messages/count_tokens` | POST | Token counting (returns 501 Not Implemented) |
-| `/v1/models` | GET | List available models |
-| `/v1/models/:model_id` | GET | Fetch a specific model |
-| `/refresh-token` | POST | Refresh HopGPT bearer token using refresh cookie |
-| `/token-status` | GET | Check token expiry status and time remaining |
-| `/token-debug` | GET | Detailed token diagnostics (compares memory vs .env) |
-| `/health` | GET | Health check |
-
-> **Breaking change (2026-04-28):** `/token-status` and `/token-debug` response shapes no longer expose a `refreshToken` field. HopGPT does not use a refresh-token cookie; the refresh credential is `openid_user_id` (exposed as `refreshCredential`) and the session is `connect.sid` (exposed as `session`). Neither endpoint was previously documented as a stable contract.
-
-## Conversation State
-
-The proxy tracks HopGPT conversation threading in-memory so multi-turn requests can reuse context and cache keys.
-
-- Provide a stable session key via `X-Session-Id` (or `X-SessionID`) or `metadata.session_id`, `metadata.sessionId`, `metadata.conversation_id`, or `metadata.conversationId`.
-- If missing, the proxy generates a session ID and returns it in the `X-Session-Id` response header.
-- Reset the session with `X-Conversation-Reset: true` or `metadata.conversation_reset`, `metadata.reset`, or `metadata.new_conversation` set to `true`.
-
-Conversation state is stored in-memory and expires after `CONVERSATION_TTL_MS` (default 6 hours).
-
-## Authentication Notes
-
-### Automatic Token Refresh
-
-When a request fails with a 401/403 authentication error, the proxy will:
-
-1. Call the HopGPT refresh endpoint (`/api/auth/refresh`)
-2. Obtain a new bearer token using the `openid_user_id` cookie (an OIDC-issued JWT despite the name)
-3. Retry the original request with the new token
-
-This extends the effective session from ~75 minutes (bearer token lifespan) to ~7 days (`openid_user_id` JWT lifespan).
-
-### Token Lifespans
-
-| Token | Lifespan | Notes |
-|-------|----------|-------|
-| Bearer Token | ~75 minutes | Automatically refreshed when expired |
-| `openid_user_id` | ~7 days | Requires manual re-authentication via `npm run extract` when expired |
-| `connect.sid` | Session-scoped | Rotated by the server on every `/api/auth/refresh`; tracked alongside the refresh credential |
-| Cloudflare cookies | Variable | May need to be refreshed if you encounter blocks |
-
-### Minimal Configuration
-
-With auto-refresh enabled, you only need to provide the **refresh credential** (`HOPGPT_COOKIE_OPENID_USER_ID`). The bearer token and session cookie will be obtained automatically on the first request:
-
-```bash
-# Minimal .env configuration
-HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
-```
-
-> **Migration note (2026-04-28):** earlier versions of HoProxy required `HOPGPT_COOKIE_REFRESH_TOKEN`. HopGPT's server never actually read that variable — it reads `openid_user_id` from the cookie jar. If you have a pre-upgrade `.env` with `HOPGPT_COOKIE_REFRESH_TOKEN=`, delete the line (it's harmless either way; the new code strips it on the next persist) and re-run `npm run extract` to populate `HOPGPT_COOKIE_OPENID_USER_ID`.
-
-> **Known limitation (2026-04-28):** HopGPT's server recently changed its streaming response protocol — `POST /api/agents/chat/AnthropicClaude` now returns a stream-acknowledgment body (`{streamId, conversationId, status: "started"}`) instead of SSE event frames, and the client is expected to subscribe to a separate stream endpoint. HoProxy's upstream transformer has not yet been updated for this, so chat requests currently return empty `content` with `input_tokens: 0, output_tokens: 0`. The authentication and extraction pipeline is fully functional; only the streaming path is affected. See the next release for the streaming-protocol fix.
 
 ## Project Structure
 
 ```
 src/
-├── index.js                    # Express server entry point, route mounting, health endpoint
-├── extract-credentials.js      # Puppeteer credential extraction script (npm run extract)
-├── errors/
-│   └── authErrors.js           # Authentication error classes
+├── index.js                    # Express entry, route mounting, health
+├── extract-credentials.js      # Puppeteer credential extraction (npm run extract)
+├── errors/authErrors.js        # Auth error classes
 ├── routes/
-│   ├── messages.js             # /v1/messages and /v1/messages/count_tokens endpoints
-│   ├── models.js               # /v1/models endpoints
-│   └── refreshToken.js         # /refresh-token and /token-status endpoints
+│   ├── messages.js             # /v1/messages (+ count_tokens)
+│   ├── models.js               # /v1/models
+│   └── refreshToken.js         # /refresh-token, /token-status, /token-debug
 ├── transformers/
-│   ├── anthropicToHopGPT.js    # Request transformation
-│   ├── hopGPTToAnthropic.js    # SSE response transformation
-│   ├── signatureCache.js       # Tool signature caching
-│   └── thinkingUtils.js        # Thinking block utilities
+│   ├── anthropicToHopGPT.js    # Request translation
+│   ├── hopGPTToAnthropic.js    # SSE response translation
+│   ├── signatureCache.js       # Tool signature cache
+│   └── thinkingUtils.js        # Thinking-block helpers
 ├── services/
 │   ├── browserCredentials.js   # Browser credential helpers
-│   ├── conversationStore.js    # In-memory session storage
+│   ├── conversationStore.js    # In-memory session store
 │   ├── hopgptClient.js         # HopGPT API client
-│   └── tlsClient.js            # TLS fingerprinted requests
+│   └── tlsClient.js            # TLS-fingerprinted requests
 └── utils/
-    ├── logger.js               # Logging utility
-    ├── modelMapping.js         # Model alias mapping
-    └── sseParser.js            # SSE stream parsing
-```
-
-## Testing
-
-```bash
-npm test           # Run tests once
-npm run test:watch # Run tests in watch mode
+    ├── logger.js               # Logging
+    ├── modelMapping.js         # Model alias resolution
+    └── sseParser.js            # SSE parsing
 ```
 
 ## License
 
 MIT
+
+---
+
+## Appendix A: Manual credential setup
+
+If Puppeteer can't drive a browser on your host, grab the values yourself:
+
+1. Open `https://chat.ai.jh.edu` and log in.
+2. DevTools (F12) → Network → send any message.
+3. Inspect the request to `/api/agents/chat/AnthropicClaude` and copy:
+
+```bash
+# .env — minimum
+HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
+
+# recommended (otherwise auto-populated on first request)
+HOPGPT_BEARER_TOKEN=eyJhbGciOiJIUzI1NiIs...
+HOPGPT_COOKIE_CONNECT_SID=s%3A...
+HOPGPT_COOKIE_CF_CLEARANCE=...
+HOPGPT_COOKIE_CF_BM=...
+HOPGPT_COOKIE_TOKEN_PROVIDER=openid
+HOPGPT_USER_AGENT="Mozilla/5.0 ..."
+```
+
+## Appendix B: MCP passthrough mode
+
+Default behavior: HoProxy parses the model's tool-call XML (MCP, `function_calls`, `antml:function_calls`, or `tool_call` JSON wrappers) and emits Anthropic `tool_use` blocks. This is what Claude Code, OpenCode, and the Anthropic SDKs expect.
+
+Passthrough leaves the raw XML in the response text so your client can parse it directly. Enable per-request:
+
+```bash
+# HTTP header
+curl -H "x-mcp-passthrough: true" ...
+
+# or metadata
+{ "metadata": { "mcp_passthrough": true }, "messages": [...] }
+```
+
+Supported tool-call XML formats (auto-detected in default mode):
+
+<details>
+<summary>Show XML format examples</summary>
+
+**MCP tool call:**
+
+```xml
+<mcp_tool_call>
+<server_name>opencode</server_name>
+<tool_name>Edit</tool_name>
+<arguments>{"file_path": "example.ts", "new_string": "..."}</arguments>
+</mcp_tool_call>
+```
+
+**OpenCode `function_calls`:**
+
+```xml
+<function_calls>
+<invoke name="Glob">
+<parameter name="pattern">**/*.ts</parameter>
+</invoke>
+</function_calls>
+```
+
+**Claude Code `antml:function_calls`:** same shape, `antml:` prefix on `function_calls` / `invoke` / `parameter`.
+
+**Tool-call JSON wrapper:**
+
+```xml
+<tool_call>
+{"name": "Task", "parameters": {"task": "Explore the codebase", "agent": "explorer"}}
+</tool_call>
+```
+
+</details>

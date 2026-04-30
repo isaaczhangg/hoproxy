@@ -1790,6 +1790,11 @@ export class HopGPTToAnthropicTransformer {
       return events.length > 0 ? events : null;
     }
 
+    log.debug('Unknown HopGPT event dropped', {
+      event: data.event,
+      hasFinal: !!data.final,
+      hasCreated: !!data.created
+    });
     return null;
   }
 
