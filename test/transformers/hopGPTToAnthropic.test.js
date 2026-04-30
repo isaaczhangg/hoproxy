@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   HopGPTToAnthropicTransformer,
   formatSSEEvent
@@ -2261,5 +2261,19 @@ line3"}}
     expect(toolUseBlocks.length).toBe(1);
     expect(toolUseBlocks[0].name).toBe('test_tool');
     expect(toolUseBlocks[0].id).toBe('toolu_123');
+  });
+});
+
+describe('HopGPTToAnthropicTransformer drift logging', () => {
+  it('emits a debug log when encountering an unknown event shape', async () => {
+    const { HopGPTToAnthropicTransformer } = await import('../../src/transformers/hopGPTToAnthropic.js');
+    const { loggers } = await import('../../src/utils/logger.js');
+    const debugSpy = vi.spyOn(loggers.transform, 'debug').mockImplementation(() => {});
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5');
+    const result = transformer.transformEvent({ event: 'message', data: JSON.stringify({ event: 'made_up_event', data: {} }) });
+    expect(result).toBeNull();
+    const matched = debugSpy.mock.calls.some(([msg]) => typeof msg === 'string' && msg.includes('Unknown HopGPT event'));
+    expect(matched).toBe(true);
+    debugSpy.mockRestore();
   });
 });
