@@ -715,6 +715,11 @@ describe('HopGPTClient', () => {
 
       const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude') && o.method === 'POST');
       expect(postCalls.length).toBe(1);  // never re-POSTed
+      // Refresh fires twice: once proactively (non-JWT bearer triggers it before POST)
+      // and once as the post-ack one-shot for the GET 401. isPostAckAuthRetry blocks
+      // further refreshes, so the second GET 401 must NOT trigger a third refresh.
+      const refreshCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.endsWith('/api/auth/refresh'));
+      expect(refreshCalls.length).toBe(2);
     });
 
     it('post-ack GET 429 → backoff → GET 200 with SAME streamId (no second POST)', async () => {
@@ -784,6 +789,9 @@ describe('HopGPTClient', () => {
       vi.spyOn(client, '_sleep').mockResolvedValue();
       await expect(client.sendMessage({ text: 'hi' })).rejects.toMatchObject({ statusCode: 429 });
 
+      // With rateLimitMaxRetries: 2, the GET is attempted 3 times (initial + 2 retries).
+      const getCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/stream/'));
+      expect(getCalls.length).toBe(3);
       const postCalls = tlsFetchSpy.mock.calls.filter(([o]) => o.url.includes('/AnthropicClaude') && o.method === 'POST');
       expect(postCalls.length).toBe(1);
     });
