@@ -276,6 +276,12 @@ async function handleNonStreamingRequest(client, hopGPTRequest, transformer, res
     transformer.transformEvent(event);
   });
 
+  // Require final:true. If the stream ended without it, HopGPT gave us an
+  // incomplete response — fail loudly instead of emitting empty content.
+  if (!transformer.hasEnded()) {
+    throw new HopGPTError(502, 'Stream ended without final event', null);
+  }
+
   // Update conversation state BEFORE sending response to prevent race condition
   // where Claude Code makes another request before state is updated
   const nextState = transformer.getConversationState();
