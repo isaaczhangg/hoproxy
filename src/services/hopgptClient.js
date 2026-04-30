@@ -810,16 +810,14 @@ export class HopGPTClient {
    * @param {object} retryState - Internal retry state
    * @returns {Response} Fetch-like response object with body as string (SSE data)
    */
-  async sendMessage(
-    hopGPTRequest,
-    requestOptions = {},
+  async sendMessage(hopGPTRequest, requestOptions = {}, retryState = {}) {
     retryState = {
       isAuthRetry: false,
       rateLimitAttempt: 0,
       isPostAckAuthRetry: false,
-      isPostAckRateLimitRetry: 0
-    }
-  ) {
+      postAckRateLimitAttempt: 0,
+      ...retryState
+    };
     if (!retryState.isAuthRetry) {
       const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
       if (tokenInfo && tokenInfo.expiresInSeconds <= this.proactiveRefreshBufferSec + 60) {
@@ -893,7 +891,7 @@ export class HopGPTClient {
       return await this.subscribeStream(ack.streamId, { signal });
     } catch (error) {
       if (error instanceof HopGPTError && error.statusCode === 429) {
-        const attempt = retryState.isPostAckRateLimitRetry;
+        const attempt = retryState.postAckRateLimitAttempt;
         const retryAfterMs = error.retryAfterMs ?? null;
         log.warn('Rate limited on GET (post-ack)', {
           attempt: `${attempt + 1}/${this.rateLimitConfig.maxRetries}`,
@@ -908,7 +906,7 @@ export class HopGPTClient {
           await this._sleep(waitTime);
           return this._subscribeWithRetry(ack, requestOptions, {
             ...retryState,
-            isPostAckRateLimitRetry: attempt + 1
+            postAckRateLimitAttempt: attempt + 1
           });
         }
         log.error('Rate limit retries exhausted on GET (post-ack); NOT re-POSTing', {
