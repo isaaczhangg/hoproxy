@@ -632,17 +632,6 @@ export class HopGPTClient {
     return sanitized;
   }
 
-  async _fetchStream(url, headers, body, signal) {
-    const sanitizedHeaders = this._sanitizeHeadersForFetch(headers);
-
-    return fetch(url, {
-      method: 'POST',
-      headers: sanitizedHeaders,
-      body: JSON.stringify(body),
-      signal
-    });
-  }
-
   async _readResponseText(response) {
     if (!response) {
       return '';
@@ -824,7 +813,12 @@ export class HopGPTClient {
   async sendMessage(
     hopGPTRequest,
     requestOptions = {},
-    retryState = { isAuthRetry: false, rateLimitAttempt: 0 }
+    retryState = {
+      isAuthRetry: false,
+      rateLimitAttempt: 0,
+      isPostAckAuthRetry: false,
+      isPostAckRateLimitRetry: 0
+    }
   ) {
     if (!retryState.isAuthRetry) {
       const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
@@ -837,143 +831,109 @@ export class HopGPTClient {
       }
     }
 
-    const url = `${this.baseURL}${this.endpoint}`;
+    const signal = requestOptions.signal;
 
-    // Detect browser type from User-Agent
-    const browserType = this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
-
-    // Start with browser-like headers to pass Cloudflare
-    // Accept: */* matches real browser behavior for this endpoint (from HAR capture)
-    const headers = {
-      ...this.buildBrowserHeaders(browserType),
-      'Content-Type': 'application/json',
-      'Accept': '*/*',
-      'Origin': this.baseURL,
-      'Referer': `${this.baseURL}/c/new`
-    };
-
-    const isStreaming = requestOptions.stream === true;
-    const abortSignal = requestOptions.signal;
-    if (isStreaming) {
-      headers['Accept'] = 'text/event-stream';
-      headers['Cache-Control'] = 'no-cache';
-      headers['Pragma'] = 'no-cache';
-    }
-
-    // Add Bearer token if configured
-    if (this.bearerToken) {
-      headers['Authorization'] = `Bearer ${this.bearerToken}`;
-    }
-
-    // Add cookies if configured
-    const cookieHeader = this.buildCookieHeader();
-    if (cookieHeader) {
-      headers['Cookie'] = cookieHeader;
-    }
-
-    let useFetchForStreaming = isStreaming && this._shouldUseFetchForStreaming();
-    let response;
-
-    if (useFetchForStreaming) {
-      try {
-        if (abortSignal?.aborted) {
-          throw new Error('Request aborted');
-        }
-        response = await this._fetchStream(url, headers, hopGPTRequest, abortSignal);
-      } catch (error) {
-        useFetchForStreaming = false;
-        log.debug('Streaming fetch failed, falling back to TLS client', { error: error.message });
-      }
-    }
-
-    if (!useFetchForStreaming) {
-      if (abortSignal?.aborted) {
-        throw new Error('Request aborted');
-      }
-      response = await tlsFetch({
-        url,
-        method: 'POST',
-        headers,
-        body: hopGPTRequest,
-        browserType
-      });
-    }
-
-    if (!response.ok) {
-      const errorText = await this._readResponseText(response);
-
-      // Handle rate limiting (429)
-      if (response.status === 429) {
-        const retryAfterMs = this._extractRetryAfter(response.headers);
+    // ----- Phase 1: POST (pre-ack). Failures here rerun the whole sequence. -----
+    let ack;
+    try {
+      ack = await this.startStream(hopGPTRequest, { signal });
+    } catch (error) {
+      if (error instanceof HopGPTError && error.statusCode === 429) {
         const { rateLimitAttempt } = retryState;
-
-        log.warn('Rate limited (429)', { attempt: `${rateLimitAttempt + 1}/${this.rateLimitConfig.maxRetries}`, retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified' });
-
-        // Check if we should retry
-        const canRetry = rateLimitAttempt < this.rateLimitConfig.maxRetries;
-        const waitTime = this._calculateBackoffDelay(rateLimitAttempt, retryAfterMs);
-
-        // If Retry-After exceeds our max wait time, don't retry
+        const retryAfterMs = error.retryAfterMs ?? null;
+        log.warn('Rate limited on POST (pre-ack)', {
+          attempt: `${rateLimitAttempt + 1}/${this.rateLimitConfig.maxRetries}`,
+          retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified'
+        });
         if (retryAfterMs !== null && retryAfterMs > this.rateLimitConfig.maxWaitTimeMs) {
-          log.warn('Rate limit wait time exceeds max', { waitTime: `${retryAfterMs}ms`, maxWait: `${this.rateLimitConfig.maxWaitTimeMs}ms` });
-          throw new HopGPTError(
-            response.status,
-            `Rate limited. Retry after ${Math.ceil(retryAfterMs / 1000)} seconds.`,
-            errorText,
-            retryAfterMs
-          );
+          throw error;
         }
-
-        if (canRetry) {
-          log.debug('Waiting before retry', { waitTime: `${waitTime}ms` });
+        if (rateLimitAttempt < this.rateLimitConfig.maxRetries) {
+          const waitTime = this._calculateBackoffDelay(rateLimitAttempt, retryAfterMs);
           await this._sleep(waitTime);
-
           return this.sendMessage(hopGPTRequest, requestOptions, {
             ...retryState,
             rateLimitAttempt: rateLimitAttempt + 1
           });
         }
-
-        // Retries exhausted
-        log.error('Rate limit retries exhausted', { attempts: rateLimitAttempt + 1 });
-        throw new HopGPTError(
-          response.status,
-          'Rate limit retries exhausted. Please try again later.',
-          errorText,
-          retryAfterMs
-        );
+        log.error('Rate limit retries exhausted on POST (pre-ack)', { attempts: rateLimitAttempt + 1 });
+        throw error;
       }
-
-      // Check if this is an auth error and we can retry
-      if ((response.status === 401 || response.status === 403) && this.autoRefresh && !retryState.isAuthRetry) {
-        const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
-        log.warn('Auth error', { status: response.status });
-        log.debug('Auth error details', { body: errorText, tokenInfo: tokenInfo ? `expires in ${tokenInfo.expiresInSeconds}s, expired: ${tokenInfo.isExpired}` : 'no valid token' });
-        log.info('Attempting token refresh');
-
+      if (error instanceof HopGPTError &&
+          (error.statusCode === 401 || error.statusCode === 403) &&
+          this.autoRefresh &&
+          !retryState.isAuthRetry) {
+        log.warn('Auth error on POST (pre-ack); attempting refresh', { status: error.statusCode });
         const refreshed = await this.refreshTokens();
         if (refreshed) {
-          log.info('Retrying request with new token');
+          log.info('Retrying POST (pre-ack) with refreshed token');
           return this.sendMessage(hopGPTRequest, requestOptions, { ...retryState, isAuthRetry: true });
-        } else {
-          log.warn('Token refresh failed, not retrying');
         }
+        log.warn('Token refresh failed; not retrying POST (pre-ack)');
       }
-
-      throw new HopGPTError(
-        response.status,
-        `HopGPT request failed: ${response.status} ${response.statusText}`,
-        errorText
-      );
+      throw error;
     }
 
-    if (useFetchForStreaming) {
-      return response;
+    if (signal?.aborted) {
+      throw new Error('Request aborted');
     }
 
-    // Return a response-like object that the SSE parser can work with
-    // The body is the SSE text, we'll create a readable stream from it
-    return this._createStreamResponse(response);
+    // ----- Phase 2: GET (post-ack). Failures retry GET only, same streamId. -----
+    return this._subscribeWithRetry(ack, requestOptions, retryState);
+  }
+
+  /**
+   * Post-ack retry wrapper around subscribeStream. Never re-POSTs; reuses the
+   * same streamId across retries. Ref: spec §"Post-ack error handling".
+   * @private
+   */
+  async _subscribeWithRetry(ack, requestOptions, retryState) {
+    const signal = requestOptions.signal;
+    try {
+      return await this.subscribeStream(ack.streamId, { signal });
+    } catch (error) {
+      if (error instanceof HopGPTError && error.statusCode === 429) {
+        const attempt = retryState.isPostAckRateLimitRetry;
+        const retryAfterMs = error.retryAfterMs ?? null;
+        log.warn('Rate limited on GET (post-ack)', {
+          attempt: `${attempt + 1}/${this.rateLimitConfig.maxRetries}`,
+          retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified',
+          streamId: ack.streamId
+        });
+        if (retryAfterMs !== null && retryAfterMs > this.rateLimitConfig.maxWaitTimeMs) {
+          throw error;
+        }
+        if (attempt < this.rateLimitConfig.maxRetries) {
+          const waitTime = this._calculateBackoffDelay(attempt, retryAfterMs);
+          await this._sleep(waitTime);
+          return this._subscribeWithRetry(ack, requestOptions, {
+            ...retryState,
+            isPostAckRateLimitRetry: attempt + 1
+          });
+        }
+        log.error('Rate limit retries exhausted on GET (post-ack); NOT re-POSTing', {
+          attempts: attempt + 1,
+          streamId: ack.streamId
+        });
+        throw error;
+      }
+      if (error instanceof HopGPTError &&
+          (error.statusCode === 401 || error.statusCode === 403) &&
+          this.autoRefresh &&
+          !retryState.isPostAckAuthRetry) {
+        log.warn('Auth error on GET (post-ack); attempting refresh (GET-only retry)', {
+          status: error.statusCode,
+          streamId: ack.streamId
+        });
+        const refreshed = await this.refreshTokens();
+        if (refreshed) {
+          log.info('Retrying GET with refreshed token, reusing streamId', { streamId: ack.streamId });
+          return this._subscribeWithRetry(ack, requestOptions, { ...retryState, isPostAckAuthRetry: true });
+        }
+        log.warn('Token refresh failed; not retrying GET (post-ack)');
+      }
+      throw error;
+    }
   }
 
   /**
