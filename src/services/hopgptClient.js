@@ -726,6 +726,95 @@ export class HopGPTClient {
   }
 
   /**
+   * Phase 2 of the HopGPT chat protocol: subscribe to the SSE stream for a
+   * previously acknowledged streamId. Returns a fetch-like Response with a
+   * ReadableStream body for SSE parsing. No retry, no refresh — pure transport.
+   * @param {string} streamId - The streamId returned by startStream()
+   * @param {object} [requestOptions]
+   * @param {AbortSignal} [requestOptions.signal]
+   * @returns {Promise<Response|{ok,status,statusText,headers,body,text,json,_rawBody}>}
+   */
+  async subscribeStream(streamId, requestOptions = {}) {
+    if (typeof streamId !== 'string' || streamId.trim().length === 0) {
+      throw new Error('subscribeStream requires a non-empty streamId');
+    }
+
+    if (requestOptions.signal?.aborted) {
+      throw new Error('Request aborted');
+    }
+
+    const browserType = this._resolveBrowserType();
+    const headers = {
+      ...this.buildBrowserHeaders(browserType),
+      'Accept': '*/*',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Referer': `${this.baseURL}/c/new`
+    };
+    if (this.bearerToken) {
+      headers['Authorization'] = `Bearer ${this.bearerToken}`;
+    }
+    const cookieHeader = this.buildCookieHeader();
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const url = `${this.baseURL}${this.streamEndpointPrefix}${encodeURIComponent(streamId)}`;
+
+    let response;
+    let usedFetch = false;
+
+    if (this._shouldUseFetchForStreaming()) {
+      try {
+        response = await fetch(url, {
+          method: 'GET',
+          headers: this._sanitizeHeadersForFetch(headers),
+          signal: requestOptions.signal
+        });
+        usedFetch = true;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          throw error;
+        }
+        log.debug('subscribeStream fetch failed, falling back to tlsFetch', { error: error.message });
+      }
+    }
+
+    if (!usedFetch) {
+      response = await tlsFetch({
+        url,
+        method: 'GET',
+        headers,
+        browserType
+      });
+    }
+
+    if (!response.ok) {
+      const body = await this._readResponseText(response);
+      const retryAfterMs = this._extractRetryAfter(response.headers);
+      throw new HopGPTError(response.status, response.statusText || `HTTP ${response.status}`, body, retryAfterMs);
+    }
+
+    const contentType = (typeof response.headers?.get === 'function'
+      ? response.headers.get('content-type')
+      : response.headers?.['content-type'] || response.headers?.['Content-Type']) || '';
+    const normalizedType = contentType.trim().toLowerCase();
+    if (!normalizedType.startsWith('text/event-stream')) {
+      const body = await this._readResponseText(response);
+      throw new HopGPTError(
+        502,
+        `Expected text/event-stream from stream endpoint, got: ${contentType || '<missing>'}`,
+        body.slice(0, 500)
+      );
+    }
+
+    if (usedFetch) {
+      return response;
+    }
+    return this._createStreamResponse(response);
+  }
+
+  /**
    * Send a message to HopGPT
    * @param {object} hopGPTRequest - Request body in HopGPT format
    * @param {object} requestOptions - Request options
