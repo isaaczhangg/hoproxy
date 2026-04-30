@@ -1743,15 +1743,24 @@ line3"}}
     const cleanup = transformer.forceEnd();
     const allEvents = [...events, ...cleanup];
 
-    // forceEnd must emit an empty text content block so the AI SDK can parse the message
+    // forceEnd must emit an explicit empty text delta so the AI SDK can parse
+    // the message as an empty string instead of undefined.
     const textBlockStart = allEvents.find(evt =>
       evt.event === 'content_block_start' &&
       evt.data.content_block?.type === 'text'
     );
     expect(textBlockStart).toBeTruthy();
 
-    // That text block should also be closed before message_stop
     const textBlockStartIndex = textBlockStart.data.index;
+    const emptyTextDelta = allEvents.find(evt =>
+      evt.event === 'content_block_delta' &&
+      evt.data.index === textBlockStartIndex &&
+      evt.data.delta?.type === 'text_delta'
+    );
+    expect(emptyTextDelta).toBeTruthy();
+    expect(emptyTextDelta.data.delta.text).toBe('');
+
+    // That text block should also be closed before message_stop
     const textBlockStop = allEvents.find(evt =>
       evt.event === 'content_block_stop' && evt.data.index === textBlockStartIndex
     );

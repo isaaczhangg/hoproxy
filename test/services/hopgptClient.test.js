@@ -136,6 +136,13 @@ describe('HopGPTClient', () => {
     });
   });
 
+  describe('autoPersist default', () => {
+    it('is disabled under Vitest to avoid overwriting a real .env file', () => {
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.autoPersist).toBe(false);
+    });
+  });
+
   it('refreshes tokens and retries on auth errors', async () => {
     const refreshResponse = createMockTLSResponse({
       ok: true,
@@ -168,6 +175,33 @@ describe('HopGPTClient', () => {
     expect(refreshCalls.length).toBe(1);
     expect(postCalls.length).toBe(1);
     expect(getCalls.length).toBe(1);
+  });
+
+  it('matches the browser refresh request shape', async () => {
+    const refreshResponse = createMockTLSResponse({
+      ok: true,
+      status: 200,
+      body: JSON.stringify({ token: 'new-token' }),
+      headers: {}
+    });
+
+    tlsFetchSpy.mockResolvedValue(refreshResponse);
+
+    const client = new HopGPTClient({
+      baseURL: 'https://example.com',
+      connectSid: 'session-id',
+      openidUserId: 'openid-id',
+      autoPersist: false
+    });
+
+    await client.refreshTokens();
+
+    const [[refreshCall]] = tlsFetchSpy.mock.calls;
+    expect(refreshCall.url).toBe('https://example.com/api/auth/refresh');
+    expect(refreshCall.method).toBe('POST');
+    expect(refreshCall.body).toBeUndefined();
+    expect(refreshCall.headers).not.toHaveProperty('Content-Type');
+    expect(refreshCall.headers.Accept).toBe('application/json, text/plain, */*');
   });
 
   it('parses cookies with equals signs in values correctly', async () => {
@@ -625,6 +659,7 @@ describe('HopGPTClient', () => {
           connectSid: 'fresh-sid',
           openidUserId: 'fresh-openid',
           bearerToken: 'fresh-bearer',
+          autoPersist: true,
           envPath
         });
         await client.persistCredentials();

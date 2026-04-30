@@ -54,8 +54,9 @@ export class HopGPTClient {
     this.refreshPromise = null;
     this.proactiveRefreshBufferSec = config.proactiveRefreshBufferSec ?? 300;
     
-    // Auto-persist credentials to .env after refresh
-    this.autoPersist = config.autoPersist !== false;
+    // Auto-persist credentials to .env after refresh. Disable by default under
+    // Vitest so mocked refreshes cannot overwrite a developer's real .env.
+    this.autoPersist = config.autoPersist ?? process.env.VITEST !== 'true';
     this.envPath = config.envPath || path.join(process.cwd(), '.env');
 
     // Rate limiting configuration
@@ -482,8 +483,7 @@ export class HopGPTClient {
       // Use the same headers as real browser requests
       const headers = {
         ...this.buildBrowserHeaders(browserType),
-        'Content-Type': 'application/json',
-        'Accept': '*/*',
+        'Accept': 'application/json, text/plain, */*',
         'Origin': this.baseURL,
         'Referer': `${this.baseURL}/`
       };
@@ -498,7 +498,6 @@ export class HopGPTClient {
         url,
         method: 'POST',
         headers,
-        body: '{}',
         browserType
       });
 

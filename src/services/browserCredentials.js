@@ -10,6 +10,7 @@ import path from 'path';
 const HOPGPT_URL = 'https://chat.ai.jh.edu';
 const USER_PATH = '/api/user';
 const CONFIG_PATH = '/api/config';
+const REFRESH_PATH = '/api/auth/refresh';
 
 puppeteer.use(StealthPlugin());
 
@@ -118,9 +119,10 @@ export async function extractCredentials(options = {}) {
     const outcome = await Promise.race([loginDetected, timeoutPromise, disconnectedPromise]);
     console.log(`Detected authenticated API call (${new URL(outcome.url).pathname}).`);
 
-    // Give the browser a moment to process Set-Cookie from the triggering response.
-    // When /api/auth/refresh is the signal, connect.sid is being set AS WE DETECT,
-    // and the cookie jar write lags behind the response event by a few ms.
+    console.log('Validating browser refresh session...');
+    bearerToken = await refreshBrowserSession(page);
+
+    // Give the browser a moment to process Set-Cookie from the refresh response.
     await new Promise((r) => setTimeout(r, 1500));
 
     // Harvest cookies. Prefer browser.cookies() (modern API, sees every tab's jar);
@@ -201,6 +203,40 @@ export async function extractCredentials(options = {}) {
   } finally {
     await browser.close().catch(() => {});
   }
+}
+
+export async function refreshBrowserSession(page) {
+  const result = await page.evaluate(async (refreshPath) => {
+    const response = await fetch(refreshPath, {
+      method: 'POST',
+      credentials: 'include'
+    });
+    const contentType = response.headers.get('content-type') || '';
+    const body = await response.text();
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType,
+      body
+    };
+  }, REFRESH_PATH);
+
+  let parsed = null;
+  if (result.contentType.toLowerCase().includes('application/json')) {
+    try {
+      parsed = JSON.parse(result.body || '{}');
+    } catch (error) {
+      throw new Error(`Browser refresh returned invalid JSON: ${error.message}`);
+    }
+  }
+
+  if (!result.ok || !parsed?.token) {
+    const message = parsed?.message || parsed?.error?.message || result.body || `HTTP ${result.status}`;
+    throw new Error(`Browser refresh failed: ${message}`);
+  }
+
+  return parsed.token;
 }
 
 function findCookie(cookies, name) {

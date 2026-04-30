@@ -140,10 +140,10 @@ With auto-refresh on, the only variable you *must* set is `HOPGPT_COOKIE_OPENID_
 
 HoProxy handles two refresh scopes:
 
-- **Bearer token** (~75 min lifespan). Auto-refreshed on 401/403 by calling HopGPT's `/api/auth/refresh` with the `openid_user_id` cookie.
+- **Bearer token** (~75 min lifespan). Auto-refreshed on 401/403 by calling HopGPT's `/api/auth/refresh` with the same empty-body request shape the browser uses.
 - **`openid_user_id`** (~7-day lifespan). When this expires, run `npm run extract` to re-authenticate.
 
-The `connect.sid` session cookie is rotated server-side on every refresh and tracked alongside the credential; Cloudflare cookies are best-effort and may need re-extraction on blocks.
+During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `connect.sid` session cookie is rotated server-side on every refresh and tracked alongside the credential; Cloudflare cookies are best-effort and may need re-extraction on blocks.
 
 ### Conversation state
 

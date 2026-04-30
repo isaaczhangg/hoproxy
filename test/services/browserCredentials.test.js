@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
   generateEnvContent,
+  refreshBrowserSession,
   writeEnvFile
 } from '../../src/services/browserCredentials.js';
 
@@ -81,5 +82,41 @@ describe('writeEnvFile', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('refreshBrowserSession', () => {
+  it('uses browser credentials to validate refreshability and return the minted bearer token', async () => {
+    const page = {
+      evaluate: vi.fn(async (_callback, refreshPath) => {
+        expect(refreshPath).toBe('/api/auth/refresh');
+        return {
+          ok: true,
+          status: 200,
+          contentType: 'application/json; charset=utf-8',
+          body: JSON.stringify({ token: 'minted-token' })
+        };
+      })
+    };
+
+    const token = await refreshBrowserSession(page);
+
+    expect(token).toBe('minted-token');
+    expect(page.evaluate).toHaveBeenCalledOnce();
+  });
+
+  it('fails before writing credentials when browser refresh does not return JSON', async () => {
+    const page = {
+      evaluate: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: 'Refresh token not provided'
+      }))
+    };
+
+    await expect(refreshBrowserSession(page)).rejects.toThrow(
+      'Browser refresh failed: Refresh token not provided'
+    );
   });
 });

@@ -33,6 +33,7 @@ import { parseSSEStream, pipeSSEStream } from "../utils/sseParser.js";
 
 const log = loggers.messages;
 const router = Router();
+const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 1000;
 
 /**
  * POST /v1/messages/count_tokens
@@ -264,12 +265,18 @@ async function handleStreamingRequest(
 	res.on("close", onClose);
 
 	let hopGPTResponse;
+	const idlePingTimer = setTimeout(() => {
+		if (!clientDisconnected && !res.writableEnded && !res.destroyed) {
+			writeSSEEvents(res, transformer.createMessageStart());
+		}
+	}, getStreamIdlePingDelayMs());
 	try {
 		hopGPTResponse = await client.sendMessage(hopGPTRequest, {
 			stream: true,
 			signal: abortController.signal,
 		});
 	} catch (error) {
+		clearTimeout(idlePingTimer);
 		// Pre-stream failure — headers not yet flushed, so we can return a proper
 		// HTTP error response via the shared error handler.
 		res.removeListener("close", onClose);
@@ -277,6 +284,22 @@ async function handleStreamingRequest(
 			log.debug("Suppressing pre-stream error for disconnected client", {
 				error: error.message,
 			});
+			return;
+		}
+		if (res.headersSent) {
+			res.write(
+				formatSSEEvent({
+					event: "error",
+					data: {
+						type: "error",
+						error: {
+							type: "api_error",
+							message: error.message,
+						},
+					},
+				}),
+			);
+			res.end();
 			return;
 		}
 		// Clear the staged SSE headers so handleError can set application/json.
@@ -287,6 +310,7 @@ async function handleStreamingRequest(
 		handleError(error, res);
 		return;
 	}
+	clearTimeout(idlePingTimer);
 
 	try {
 		await pipeSSEStream(
@@ -350,6 +374,25 @@ async function handleStreamingRequest(
 	} finally {
 		// Clean up the close listener to prevent memory leaks
 		res.removeListener("close", onClose);
+	}
+}
+
+function getStreamIdlePingDelayMs() {
+	const parsed = Number.parseInt(
+		process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS ?? "",
+		10,
+	);
+	return Number.isFinite(parsed) && parsed >= 0
+		? parsed
+		: DEFAULT_STREAM_IDLE_PING_DELAY_MS;
+}
+
+function writeSSEEvents(res, events) {
+	for (const event of events) {
+		res.write(formatSSEEvent(event));
+	}
+	if (typeof res.flush === "function") {
+		res.flush();
 	}
 }
 

@@ -38,10 +38,17 @@ function buildApp() {
 
 describe("POST /v1/messages streaming — end-to-end", () => {
 	let getDefaultClientSpy;
+	let originalIdlePingDelay;
 	beforeEach(() => {
+		originalIdlePingDelay = process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS;
 		getDefaultClientSpy = vi.spyOn(hopgptClientModule, "getDefaultClient");
 	});
 	afterEach(() => {
+		if (originalIdlePingDelay === undefined) {
+			delete process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS;
+		} else {
+			process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS = originalIdlePingDelay;
+		}
 		vi.restoreAllMocks();
 	});
 
@@ -98,6 +105,38 @@ describe("POST /v1/messages streaming — end-to-end", () => {
 			}
 		}
 		expect(deltaTexts.join("")).toBe("Hi there! How can I help you today?");
+	});
+
+	it("sends message_start before upstream content so slow Opus streams are not idle", async () => {
+		const harSSE =
+			'event: message\ndata: {"created":true,"message":{"messageId":"m1","conversationId":"c1"}}\n\n' +
+			'event: message\ndata: {"event":"on_message_delta","data":{"delta":{"content":[{"type":"text","text":"Hi"}]}}}\n\n' +
+			'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r1","conversationId":"c1","content":[{"type":"text","text":"Hi"}]}}\n\n';
+
+		process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS = "10";
+		getDefaultClientSpy.mockReturnValue({
+			validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+			sendMessage: async () => {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+				return makeSSEResponse(harSSE);
+			},
+		});
+
+		const app = buildApp();
+		const res = await request(app)
+			.post("/v1/messages")
+			.send({
+				model: "claude-opus-4-5",
+				max_tokens: 128,
+				stream: true,
+				messages: [{ role: "user", content: "hi" }],
+			});
+
+		expect(res.status).toBe(200);
+		const messageStartIndex = res.text.indexOf("event: message_start");
+		const contentBlockStartIndex = res.text.indexOf("event: content_block_start");
+		expect(messageStartIndex).toBeGreaterThanOrEqual(0);
+		expect(contentBlockStartIndex).toBeGreaterThan(messageStartIndex);
 	});
 
 	// Regression: a pre-stream failure (expired creds, CF block, network error)

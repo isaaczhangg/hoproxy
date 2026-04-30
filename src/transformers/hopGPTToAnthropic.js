@@ -2291,6 +2291,27 @@ export class HopGPTToAnthropicTransformer {
     return events;
   }
 
+  _emitEmptyTextDelta() {
+    const startEvent = this._createBlockStart('text');
+    const events = Array.isArray(startEvent)
+      ? [...startEvent]
+      : (startEvent ? [startEvent] : []);
+
+    events.push({
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: this.currentBlockIndex,
+        delta: {
+          type: 'text_delta',
+          text: ''
+        }
+      }
+    });
+    events.push(this._createBlockStop());
+    return events;
+  }
+
   _processToolUseBlock(block) {
     const events = [];
     this.hasToolUse = true;
@@ -2443,6 +2464,10 @@ export class HopGPTToAnthropicTransformer {
     }
 
     return { stopReason: 'end_turn', stopSequence: null };
+  }
+
+  createMessageStart() {
+    return this._createMessageStart() || [];
   }
 
   _createMessageStart() {
@@ -2651,13 +2676,7 @@ export class HopGPTToAnthropicTransformer {
     // parse the message. Without this they see a message whose only block is
     // thinking, can't extract text, and throw AI_JSONParseError("undefined").
     if (this.hasStarted && !this.hasEmittedNonThinkingContent && !this.hasToolUse) {
-      const startEvent = this._createBlockStart('text');
-      if (Array.isArray(startEvent)) {
-        events.push(...startEvent);
-      } else if (startEvent) {
-        events.push(startEvent);
-      }
-      events.push(this._createBlockStop());
+      events.push(...this._emitEmptyTextDelta());
     }
 
     const { stopReason, stopSequence } = this._determineStopInfo();
