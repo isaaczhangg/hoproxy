@@ -93,6 +93,8 @@ curl http://localhost:3001/v1/messages \
 
 The proxy also accepts dotted variants (`claude-sonnet-4.5`) and `-thinking` suffixes (`claude-sonnet-4-5-thinking`). The `-thinking` form never appears in canonical responses — thinking mode is enabled internally based on the model.
 
+When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 before forwarding to HopGPT. HopGPT's Bedrock backend rejects requests where `max_tokens <= thinking.budget_tokens`; bumping the floor keeps the request valid regardless of the caller's budget.
+
 ## API
 
 | Endpoint                      | Method | Purpose                                            |
