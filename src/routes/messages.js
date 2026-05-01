@@ -320,7 +320,7 @@ async function handleStreamingRequest(
 				return transformer.transformEvent(event);
 			},
 			abortController.signal,
-			{ autoEndOnMessageStop: true },
+			{ autoEndOnMessageStop: false },
 		);
 
 		// Ensure the stream is properly terminated even if HopGPT didn't send a final event
@@ -333,8 +333,8 @@ async function handleStreamingRequest(
 			}
 		}
 
-		// Update conversation state BEFORE ending response to prevent race condition
-		// where Claude Code makes another request before state is updated
+		// Update conversation state BEFORE ending response to prevent race conditions
+		// where clients make the next request before state is updated.
 		const nextState = transformer.getConversationState();
 		if (
 			nextState?.lastAssistantMessageId ||
