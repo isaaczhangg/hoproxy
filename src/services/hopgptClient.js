@@ -10,6 +10,7 @@ import {
 } from '../errors/authErrors.js';
 
 const log = loggers.hopgpt;
+const DEFAULT_PROACTIVE_REFRESH_BUFFER_SEC = 600;
 
 // In-process mutex for .env file writes
 let envWritePromise = null;
@@ -52,7 +53,10 @@ export class HopGPTClient {
       process.env.HOPGPT_STREAMING_TRANSPORT ||
       'fetch').toLowerCase();
     this.refreshPromise = null;
-    this.proactiveRefreshBufferSec = config.proactiveRefreshBufferSec ?? 300;
+    this.proactiveRefreshBufferSec = parsePositiveInteger(
+      config.proactiveRefreshBufferSec ?? process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS,
+      DEFAULT_PROACTIVE_REFRESH_BUFFER_SEC
+    );
     
     // Auto-persist credentials to .env after refresh. Disable by default under
     // Vitest so mocked refreshes cannot overwrite a developer's real .env.
@@ -1130,4 +1134,17 @@ function parseTokenExpiry(token) {
   } catch (error) {
     return null;
   }
+}
+
+function parsePositiveInteger(value, fallback) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
 }
