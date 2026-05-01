@@ -69,13 +69,20 @@ function mockChatFlow(tlsFetchSpy, {
 
 describe('HopGPTClient', () => {
   let tlsFetchSpy;
+  let originalProactiveRefreshBuffer;
 
   beforeEach(() => {
     // Mock tlsFetch instead of global fetch
     tlsFetchSpy = vi.spyOn(tlsClient, 'tlsFetch');
+    originalProactiveRefreshBuffer = process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS;
   });
 
   afterEach(() => {
+    if (originalProactiveRefreshBuffer === undefined) {
+      delete process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS;
+    } else {
+      process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS = originalProactiveRefreshBuffer;
+    }
     vi.restoreAllMocks();
   });
 
@@ -140,6 +147,25 @@ describe('HopGPTClient', () => {
     it('is disabled under Vitest to avoid overwriting a real .env file', () => {
       const client = new HopGPTClient({ openidUserId: 'id' });
       expect(client.autoPersist).toBe(false);
+    });
+  });
+
+  describe('proactive refresh buffer', () => {
+    it('defaults to ten minutes', () => {
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.proactiveRefreshBufferSec).toBe(600);
+    });
+
+    it('can be configured with HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS', () => {
+      process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS = '900';
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.proactiveRefreshBufferSec).toBe(900);
+    });
+
+    it('uses the default when HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS is invalid', () => {
+      process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS = 'not-a-number';
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.proactiveRefreshBufferSec).toBe(600);
     });
   });
 

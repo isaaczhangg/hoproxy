@@ -128,6 +128,7 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | `HOPGPT_TOOL_CALL_BUFFER_SIZE`              | `1000000`   | Max buffer for streaming tool-call detection (bytes).                                                                |
 | `HOPGPT_TOOL_CALL_BUFFER_WARN_THRESHOLD`    | `50000`     | Buffer size that triggers warning logs (bytes).                                                                      |
 | `HOPGPT_TOOL_CALL_BUFFER_WARN_STEP`         | `200000`    | Increment between subsequent buffer warnings (bytes).                                                                |
+| `HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS`   | `600`       | Refresh bearer tokens this many seconds before expiry, then retry once on 401/403 if HopGPT still rejects the bearer. |
 | `HOPGPT_DEBUG`                              | unset       | Extra debug logging.                                                                                                 |
 | `HOPGPT_LOG_LEVEL`                          | `info`      | `debug` \| `info` \| `warn` \| `error` \| `silent`.                                                                 |
 | `HOPGPT_LOG_NO_COLOR` / `NO_COLOR`          | unset       | Disable ANSI color in logs.                                                                                          |
@@ -140,7 +141,7 @@ With auto-refresh on, the only variable you *must* set is `HOPGPT_COOKIE_OPENID_
 
 HoProxy handles two refresh scopes:
 
-- **Bearer token** (~75 min lifespan). Auto-refreshed on 401/403 by calling HopGPT's `/api/auth/refresh` with the same empty-body request shape the browser uses.
+- **Bearer token** (~75 min lifespan). Auto-refreshed before expiry by calling HopGPT's `/api/auth/refresh` with the same empty-body request shape the browser uses; if HopGPT still returns 401/403, HoProxy refreshes once and retries the failed request phase.
 - **`openid_user_id`** (~7-day lifespan). When this expires, run `npm run extract` to re-authenticate.
 
 During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `connect.sid` session cookie is rotated server-side on every refresh and tracked alongside the credential; Cloudflare cookies are best-effort and may need re-extraction on blocks.
