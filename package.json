@@ -18,6 +18,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "extract": "node src/extract-credentials.js",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "biome check --write .",
     "test": "vitest run",
     "test:watch": "vitest"
   },

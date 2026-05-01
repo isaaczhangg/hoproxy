@@ -180,8 +180,17 @@ HopGPT uses a two-phase chat protocol. HoProxy POSTs `/api/agents/chat/Anthropic
 ## Testing
 
 ```bash
-npm test            # run once
-npm run test:watch  # watch mode
+bun run test        # run once
+bun run test:watch  # watch mode
+```
+
+## Code quality
+
+```bash
+bun run lint          # run Biome lint rules
+bun run format        # write formatter changes
+bun run format:check  # check formatting without writing
+bun run check         # apply safe Biome fixes
 ```
 
 ## Project Structure
