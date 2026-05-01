@@ -190,6 +190,55 @@ describe("POST /v1/messages streaming — end-to-end", () => {
 		expect(hopGPTRequests[1].text).toBe("again");
 	});
 
+	it("threads clients that do not return the generated session header", async () => {
+		const firstSSE =
+			'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1"}}\n\n' +
+			'event: message\ndata: {"event":"on_message_delta","data":{"delta":{"content":[{"type":"text","text":"Hi"}]}}}\n\n' +
+			'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r1","conversationId":"c1","content":[{"type":"text","text":"Hi"}]}}\n\n';
+		const secondSSE =
+			'event: message\ndata: {"created":true,"message":{"messageId":"u2","conversationId":"c1"}}\n\n' +
+			'event: message\ndata: {"event":"on_message_delta","data":{"delta":{"content":[{"type":"text","text":"Again"}]}}}\n\n' +
+			'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r2","conversationId":"c1","content":[{"type":"text","text":"Again"}]}}\n\n';
+		const hopGPTRequests = [];
+
+		getDefaultClientSpy.mockReturnValue({
+			validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+			sendMessage: async (hopGPTRequest) => {
+				hopGPTRequests.push(hopGPTRequest);
+				return makeSSEResponse(hopGPTRequests.length === 1 ? firstSSE : secondSSE);
+			},
+		});
+
+		const app = buildApp();
+		await request(app)
+			.post("/v1/messages")
+			.send({
+				model: "claude-opus-4-5",
+				max_tokens: 128,
+				stream: true,
+				messages: [{ role: "user", content: "hi" }],
+			})
+			.expect(200);
+
+		await request(app)
+			.post("/v1/messages")
+			.send({
+				model: "claude-opus-4-5",
+				max_tokens: 128,
+				stream: true,
+				messages: [
+					{ role: "user", content: "hi" },
+					{ role: "assistant", content: "Hi" },
+					{ role: "user", content: "again" },
+				],
+			})
+			.expect(200);
+
+		expect(hopGPTRequests[1].parentMessageId).toBe("r1");
+		expect(hopGPTRequests[1].text).toBe("again");
+		expect(hopGPTRequests[1].text).not.toContain("Human: hi");
+	});
+
 	// Regression: a pre-stream failure (expired creds, CF block, network error)
 	// used to flush SSE headers first, then write a lone `event: error` and end.
 	// Vercel AI SDK's Anthropic provider chokes on that shape with

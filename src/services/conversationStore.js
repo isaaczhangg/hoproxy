@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
 import { loggers } from '../utils/logger.js';
 
 const log = loggers.session;
@@ -45,15 +46,74 @@ function extractSessionIdFromMetadata(metadata) {
     normalizeId(metadata.conversationId);
 }
 
+function normalizeContentForSession(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((block) => {
+      if (!block || typeof block !== 'object') {
+        return '';
+      }
+      if (typeof block.text === 'string') {
+        return block.text;
+      }
+      if (block.type === 'image') {
+        return '[image]';
+      }
+      if (block.type === 'tool_result') {
+        return `[tool_result:${block.tool_use_id || ''}]`;
+      }
+      return `[${block.type || 'block'}]`;
+    })
+    .join('\n');
+}
+
+function normalizeSystemForSession(system) {
+  if (typeof system === 'string') {
+    return system;
+  }
+  if (!Array.isArray(system)) {
+    return '';
+  }
+  return normalizeContentForSession(system);
+}
+
+function deriveSessionIdFromConversationRoot(requestBody) {
+  const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
+  const firstUserMessage = messages.find((message) => message?.role === 'user');
+  const firstUserText = normalizeContentForSession(firstUserMessage?.content).trim();
+  if (!firstUserText) {
+    return null;
+  }
+
+  const stableRoot = JSON.stringify({
+    model: requestBody?.model || '',
+    system: normalizeSystemForSession(requestBody?.system).trim(),
+    firstUser: firstUserText,
+  });
+  const digest = createHash('sha256').update(stableRoot).digest('hex').slice(0, 32);
+  return `derived:${digest}`;
+}
+
 export function resolveSessionId(req, requestBody) {
   const headerSessionId = normalizeId(req.get('x-session-id')) ||
     normalizeId(req.get('x-sessionid'));
   const metadataSessionId = extractSessionIdFromMetadata(requestBody?.metadata);
-  const sessionId = headerSessionId || metadataSessionId;
+  const explicitSessionId = headerSessionId || metadataSessionId;
 
-  if (sessionId) {
-    log.debug('Using provided session ID', { sessionId: sessionId.slice(0, 8) + '...' });
-    return { sessionId, isGenerated: false };
+  if (explicitSessionId) {
+    log.debug('Using provided session ID', { sessionId: explicitSessionId.slice(0, 8) + '...' });
+    return { sessionId: explicitSessionId, isGenerated: false };
+  }
+
+  const derivedSessionId = deriveSessionIdFromConversationRoot(requestBody);
+  if (derivedSessionId) {
+    log.debug('Using derived conversation session ID', { sessionId: derivedSessionId.slice(0, 16) + '...' });
+    return { sessionId: derivedSessionId, isGenerated: false };
   }
 
   const newSessionId = uuidv4();
