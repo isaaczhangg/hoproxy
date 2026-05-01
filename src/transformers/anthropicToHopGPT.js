@@ -688,6 +688,10 @@ export function normalizeMaxTokens(value) {
   return intValue > 0 ? intValue : null;
 }
 
+function normalizeFiniteNumber(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
 export function normalizeStopSequences(value) {
   if (Array.isArray(value)) {
     return value.filter((seq) => typeof seq === "string" && seq.length > 0);
@@ -795,6 +799,9 @@ export function transformAnthropicToHopGPT(
     tools,
     tool_choice,
     max_tokens,
+    temperature,
+    top_p,
+    top_k,
     stop_sequences,
     stop,
   } = anthropicRequest;
@@ -917,6 +924,14 @@ export function transformAnthropicToHopGPT(
   if (effectiveMaxTokens !== null && effectiveMaxTokens > 0) {
     hopGPTRequest.max_tokens = effectiveMaxTokens;
   }
+
+  for (const [name, value] of Object.entries({ temperature, top_p, top_k })) {
+    const normalizedValue = normalizeFiniteNumber(value);
+    if (normalizedValue !== null) {
+      hopGPTRequest[name] = normalizedValue;
+    }
+  }
+
   hopGPTRequest.stop_sequences = stopSequences;
 
   // Add tools if provided
@@ -935,6 +950,12 @@ export function transformAnthropicToHopGPT(
   if (thinkingConfig.enabled) {
     hopGPTRequest.reasoning_effort = "high";
     hopGPTRequest.reasoning_summary = "detailed";
+    if (Number.isFinite(thinkingConfig.budgetTokens) && thinkingConfig.budgetTokens > 0) {
+      hopGPTRequest.thinking = {
+        type: "enabled",
+        budget_tokens: Math.floor(thinkingConfig.budgetTokens),
+      };
+    }
     log.debug('Thinking mode enabled', { model });
   }
 

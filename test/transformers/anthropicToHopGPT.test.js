@@ -187,4 +187,52 @@ describe('anthropicToHopGPT transformers', () => {
     expect(result.reasoning_effort).toBeUndefined();
     expect(result.max_tokens).toBe(512);
   });
+
+  it('forwards Anthropic sampling parameters to HopGPT', () => {
+    const request = {
+      model: 'claude-haiku-4-5',
+      max_tokens: 512,
+      temperature: 0.2,
+      top_p: 0.9,
+      top_k: 40,
+      messages: [{ role: 'user', content: 'Hello' }]
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.temperature).toBe(0.2);
+    expect(result.top_p).toBe(0.9);
+    expect(result.top_k).toBe(40);
+  });
+
+  it('ignores invalid sampling parameter values', () => {
+    const request = {
+      model: 'claude-haiku-4-5',
+      max_tokens: 512,
+      temperature: '0.2',
+      top_p: Number.NaN,
+      top_k: Number.POSITIVE_INFINITY,
+      messages: [{ role: 'user', content: 'Hello' }]
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.temperature).toBeUndefined();
+    expect(result.top_p).toBeUndefined();
+    expect(result.top_k).toBeUndefined();
+  });
+
+  it('preserves explicit thinking budget tokens', () => {
+    const request = {
+      model: 'claude-opus-4-5',
+      max_tokens: 12000,
+      thinking: { type: 'enabled', budget_tokens: 4096 },
+      messages: [{ role: 'user', content: 'Hello' }]
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.reasoning_effort).toBe('high');
+    expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 });
+  });
 });
