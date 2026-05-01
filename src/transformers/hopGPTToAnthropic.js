@@ -1946,7 +1946,11 @@ export class HopGPTToAnthropicTransformer {
 
       if (!this.blockStarted || this.currentBlockType !== 'thinking') {
         const startEvent = this._createBlockStart('thinking');
-        if (startEvent) events.push(startEvent);
+        if (Array.isArray(startEvent)) {
+          events.push(...startEvent);
+        } else if (startEvent) {
+          events.push(startEvent);
+        }
       }
 
       this.accumulatedThinking += thinkingText;

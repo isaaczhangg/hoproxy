@@ -115,6 +115,39 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(response.stop_reason).toBe('tool_use');
   });
 
+  it('emits valid SSE events when thinking is the first streamed block', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true
+    });
+
+    const result = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [
+              { type: 'text', text: 'The user asked' }
+            ]
+          }
+        }
+      })
+    });
+
+    const events = Array.isArray(result) ? result : [result];
+    expect(events.map(evt => evt.event)).toEqual([
+      'message_start',
+      'content_block_start',
+      'content_block_delta'
+    ]);
+    expect(events.every(evt => evt?.event && evt?.data)).toBe(true);
+    expect(events[1].data.content_block.type).toBe('thinking');
+    expect(events[2].data.delta).toMatchObject({
+      type: 'thinking_delta',
+      thinking: 'The user asked'
+    });
+  });
+
   it('treats type:text deltas without an index as thinking when thinking is enabled', () => {
     // HopGPT's Opus 4.5 reasoning mode emits preamble as plain {type:"text", text:...}
     // blocks with no `index` field, then the real reply arrives with `index:0` set.
