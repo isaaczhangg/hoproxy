@@ -1,13 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  transformAnthropicToHopGPT,
-  transformTools,
-  transformToolChoice,
-  extractThinkingConfig,
   buildConversationText,
-  hasThinkingContent,
+  extractThinkingConfig,
   extractThinkingSignature,
-  normalizeSystemPrompt
+  hasThinkingContent,
+  normalizeSystemPrompt,
+  transformAnthropicToHopGPT,
+  transformToolChoice,
+  transformTools,
 } from '../../src/transformers/anthropicToHopGPT.js';
 import { readFixture } from '../helpers/fixtures.js';
 
@@ -17,8 +17,8 @@ describe('anthropicToHopGPT transformers', () => {
       {
         name: 'search',
         description: 'Search tool',
-        input_schema: { type: 'object', properties: { q: { type: 'string' } } }
-      }
+        input_schema: { type: 'object', properties: { q: { type: 'string' } } },
+      },
     ];
     const transformed = transformTools(tools);
 
@@ -26,9 +26,17 @@ describe('anthropicToHopGPT transformers', () => {
       {
         name: 'search',
         description: 'Search tool',
-        input_schema: { type: 'object', properties: { q: { type: 'string' } }, required: [] },
-        parameters: { type: 'object', properties: { q: { type: 'string' } }, required: [] }
-      }
+        input_schema: {
+          type: 'object',
+          properties: { q: { type: 'string' } },
+          required: [],
+        },
+        parameters: {
+          type: 'object',
+          properties: { q: { type: 'string' } },
+          required: [],
+        },
+      },
     ]);
 
     expect(transformToolChoice('auto')).toEqual({ type: 'auto' });
@@ -36,7 +44,7 @@ describe('anthropicToHopGPT transformers', () => {
     expect(transformToolChoice('none')).toEqual({ type: 'none' });
     expect(transformToolChoice({ type: 'tool', name: 'search' })).toEqual({
       type: 'function',
-      function: { name: 'search' }
+      function: { name: 'search' },
     });
   });
 
@@ -50,8 +58,12 @@ describe('anthropicToHopGPT transformers', () => {
     expect(result.text).toContain('Human: Check this');
     expect(result.parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
     expect(result.image_urls).toHaveLength(2);
-    expect(result.image_urls[0].image_url.url).toMatch(/^data:image\/png;base64,/);
-    expect(result.image_urls[1].image_url.url).toBe('https://example.com/cat.png');
+    expect(result.image_urls[0].image_url.url).toMatch(
+      /^data:image\/png;base64,/,
+    );
+    expect(result.image_urls[1].image_url.url).toBe(
+      'https://example.com/cat.png',
+    );
   });
 
   it('threads conversations with provided parent IDs', () => {
@@ -61,17 +73,64 @@ describe('anthropicToHopGPT transformers', () => {
       messages: [
         { role: 'user', content: 'First' },
         { role: 'assistant', content: 'Second' },
-        { role: 'user', content: 'Latest' }
-      ]
+        { role: 'user', content: 'Latest' },
+      ],
     };
 
     const result = transformAnthropicToHopGPT(request, {
       lastAssistantMessageId: 'assistant-1',
-      systemPrompt: 'System A'
+      systemPrompt: 'System A',
     });
 
     expect(result.parentMessageId).toBe('assistant-1');
     expect(result.text).toBe('Latest');
+  });
+
+  it('keeps tool results with synthetic thinking continuation in threaded conversations', () => {
+    const request = {
+      model: 'claude-opus-4-5',
+      system: 'System A',
+      messages: [
+        {
+          role: 'user',
+          content: "can you explore the codebase but don't use subagents?",
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_read',
+              name: 'Read',
+              input: { file_path: 'package.json' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_read',
+              content: '{"name":"hopgpt-anthropic-proxy"}',
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = transformAnthropicToHopGPT(request, {
+      lastAssistantMessageId: 'assistant-1',
+      systemPrompt: 'System A',
+    });
+
+    expect(result.parentMessageId).toBe('assistant-1');
+    expect(result.text).toContain('<tool_result tool_use_id="toolu_read">');
+    expect(result.text).toContain('{"name":"hopgpt-anthropic-proxy"}');
+    expect(result.text).toContain('Assistant: [Tool execution completed.]');
+    expect(result.text).toContain('Human: [Continue]');
+    expect(result.text).not.toBe('[Continue]');
+    expect(result.text).not.toContain('can you explore the codebase');
   });
 
   it('extracts thinking configuration and signatures', async () => {
@@ -84,8 +143,8 @@ describe('anthropicToHopGPT transformers', () => {
       role: 'assistant',
       content: [
         { type: 'thinking', thinking: 'Thoughts', signature: 'sig-123' },
-        { type: 'text', text: 'Answer' }
-      ]
+        { type: 'text', text: 'Answer' },
+      ],
     };
 
     expect(hasThinkingContent(message)).toBe(true);
@@ -98,10 +157,10 @@ describe('anthropicToHopGPT transformers', () => {
         role: 'assistant',
         content: [
           { type: 'thinking', thinking: 'Skip me' },
-          { type: 'text', text: 'Visible' }
-        ]
+          { type: 'text', text: 'Visible' },
+        ],
       },
-      { role: 'user', content: 'Next' }
+      { role: 'user', content: 'Next' },
     ];
 
     const text = buildConversationText(messages, 'System Prompt');
@@ -114,7 +173,7 @@ describe('anthropicToHopGPT transformers', () => {
   it('normalizes system prompts from array blocks', () => {
     const systemPrompt = normalizeSystemPrompt([
       { type: 'text', text: 'Line 1' },
-      { type: 'text', text: 'Line 2' }
+      { type: 'text', text: 'Line 2' },
     ]);
 
     expect(systemPrompt).toBe('Line 1\nLine 2');
@@ -123,7 +182,7 @@ describe('anthropicToHopGPT transformers', () => {
   it('always appends tool_call stop sequence', () => {
     const request = {
       model: 'claude-sonnet-4-5-thinking',
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -136,7 +195,7 @@ describe('anthropicToHopGPT transformers', () => {
     const request = {
       model: 'claude-sonnet-4-5-thinking',
       messages: [{ role: 'user', content: 'Hello' }],
-      stop: ['<end>']
+      stop: ['<end>'],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -153,7 +212,7 @@ describe('anthropicToHopGPT transformers', () => {
     const request = {
       model: 'claude-opus-4-5',
       max_tokens: 2048,
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -166,7 +225,7 @@ describe('anthropicToHopGPT transformers', () => {
     const request = {
       model: 'claude-opus-4-5',
       max_tokens: 32000,
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -179,7 +238,7 @@ describe('anthropicToHopGPT transformers', () => {
     const request = {
       model: 'claude-haiku-4-5',
       max_tokens: 512,
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -195,7 +254,7 @@ describe('anthropicToHopGPT transformers', () => {
       temperature: 0.2,
       top_p: 0.9,
       top_k: 40,
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -212,7 +271,7 @@ describe('anthropicToHopGPT transformers', () => {
       temperature: '0.2',
       top_p: Number.NaN,
       top_k: Number.POSITIVE_INFINITY,
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);
@@ -227,7 +286,7 @@ describe('anthropicToHopGPT transformers', () => {
       model: 'claude-opus-4-5',
       max_tokens: 12000,
       thinking: { type: 'enabled', budget_tokens: 4096 },
-      messages: [{ role: 'user', content: 'Hello' }]
+      messages: [{ role: 'user', content: 'Hello' }],
     };
 
     const result = transformAnthropicToHopGPT(request);

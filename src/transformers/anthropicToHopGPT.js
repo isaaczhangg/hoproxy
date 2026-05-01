@@ -1,12 +1,12 @@
-import { v4 as uuidv4 } from "uuid";
-import { isThinkingModel } from "./hopGPTToAnthropic.js";
-import { prepareMessagesForThinking } from "./thinkingUtils.js";
+import { v4 as uuidv4 } from 'uuid';
 import { loggers } from '../utils/logger.js';
+import { isThinkingModel } from './hopGPTToAnthropic.js';
+import { prepareMessagesForThinking } from './thinkingUtils.js';
 
 const log = loggers.transform;
 
 function resolveDisableParallelToolUse(toolChoice) {
-  if (!toolChoice || typeof toolChoice !== "object") {
+  if (!toolChoice || typeof toolChoice !== 'object') {
     return false;
   }
 
@@ -21,38 +21,38 @@ export function getToolChoiceConfig(toolChoice) {
     mustUseTool: false,
     forcedToolName: null,
     allowTools: true,
-    disableParallelToolUse: resolveDisableParallelToolUse(toolChoice)
+    disableParallelToolUse: resolveDisableParallelToolUse(toolChoice),
   };
 
   if (!toolChoice) {
     return config;
   }
 
-  if (typeof toolChoice === "string") {
-    if (toolChoice === "none") {
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'none') {
       config.allowTools = false;
     }
-    if (toolChoice === "any" || toolChoice === "required") {
+    if (toolChoice === 'any' || toolChoice === 'required') {
       config.mustUseTool = true;
     }
     return config;
   }
 
-  if (typeof toolChoice === "object") {
-    if (toolChoice.type === "none") {
+  if (typeof toolChoice === 'object') {
+    if (toolChoice.type === 'none') {
       config.allowTools = false;
       return config;
     }
-    if (toolChoice.type === "any") {
+    if (toolChoice.type === 'any') {
       config.mustUseTool = true;
       return config;
     }
-    if (toolChoice.type === "tool" && toolChoice.name) {
+    if (toolChoice.type === 'tool' && toolChoice.name) {
       config.mustUseTool = true;
       config.forcedToolName = toolChoice.name;
       return config;
     }
-    if (toolChoice.type === "function" && toolChoice.function?.name) {
+    if (toolChoice.type === 'function' && toolChoice.function?.name) {
       config.mustUseTool = true;
       config.forcedToolName = toolChoice.function.name;
       return config;
@@ -98,7 +98,8 @@ function buildToolInjectionPrompt(tools, toolChoice) {
   prompt += `\n## Tool Definitions\n\n`;
 
   for (const tool of tools) {
-    const schema = tool.input_schema || tool.parameters || { type: 'object', properties: {} };
+    const schema = tool.input_schema ||
+      tool.parameters || { type: 'object', properties: {} };
     const properties = schema.properties || {};
     const required = Array.isArray(schema.required) ? schema.required : [];
 
@@ -112,7 +113,9 @@ function buildToolInjectionPrompt(tools, toolChoice) {
       for (const [paramName, paramDef] of Object.entries(properties)) {
         const reqMark = required.includes(paramName) ? ' (required)' : '';
         const paramType = describeSchemaType(paramDef);
-        const paramDesc = paramDef.description ? `: ${truncateSchemaDescription(paramDef.description)}` : '';
+        const paramDesc = paramDef.description
+          ? `: ${truncateSchemaDescription(paramDef.description)}`
+          : '';
         const enumHint = formatEnumHint(paramDef);
         prompt += `- ${paramName}${reqMark} [${paramType}]${paramDesc}${enumHint}\n`;
         const detailLines = formatSchemaDetailLines(paramDef, 1);
@@ -144,41 +147,41 @@ function buildToolInjectionPrompt(tools, toolChoice) {
 }
 
 const DEFAULT_TOOL_SCHEMA = {
-  type: "object",
+  type: 'object',
   properties: {},
-  required: []
+  required: [],
 };
 
 function normalizeSchemaType(type, schema) {
   if (Array.isArray(type)) {
-    const filtered = type.filter((value) => value && value !== "null");
+    const filtered = type.filter((value) => value && value !== 'null');
     return filtered.length > 0 ? filtered[0] : null;
   }
-  if (typeof type === "string") {
+  if (typeof type === 'string') {
     return type;
   }
   if (schema?.properties) {
-    return "object";
+    return 'object';
   }
   if (schema?.items) {
-    return "array";
+    return 'array';
   }
   return null;
 }
 
 function scoreSchemaOption(schema) {
-  if (!schema || typeof schema !== "object") {
+  if (!schema || typeof schema !== 'object') {
     return -1;
   }
 
   const type = normalizeSchemaType(schema.type, schema);
   let score = 0;
 
-  if (type === "object" || schema.properties) {
+  if (type === 'object' || schema.properties) {
     score += 5;
   }
 
-  if (schema.properties && typeof schema.properties === "object") {
+  if (schema.properties && typeof schema.properties === 'object') {
     score += Math.min(Object.keys(schema.properties).length, 10);
   }
 
@@ -213,21 +216,32 @@ function pickBestSchemaOption(options) {
 }
 
 function mergeSchemas(baseSchema, extraSchema) {
-  const base = baseSchema && typeof baseSchema === "object" ? baseSchema : {};
-  const extra = extraSchema && typeof extraSchema === "object" ? extraSchema : {};
+  const base = baseSchema && typeof baseSchema === 'object' ? baseSchema : {};
+  const extra =
+    extraSchema && typeof extraSchema === 'object' ? extraSchema : {};
 
   const merged = { ...base, ...extra };
 
-  const baseProps = base.properties && typeof base.properties === "object" ? base.properties : {};
-  const extraProps = extra.properties && typeof extra.properties === "object" ? extra.properties : {};
+  const baseProps =
+    base.properties && typeof base.properties === 'object'
+      ? base.properties
+      : {};
+  const extraProps =
+    extra.properties && typeof extra.properties === 'object'
+      ? extra.properties
+      : {};
   merged.properties = { ...baseProps, ...extraProps };
 
   const required = new Set();
   if (Array.isArray(base.required)) {
-    base.required.forEach((item) => required.add(item));
+    for (const item of base.required) {
+      required.add(item);
+    }
   }
   if (Array.isArray(extra.required)) {
-    extra.required.forEach((item) => required.add(item));
+    for (const item of extra.required) {
+      required.add(item);
+    }
   }
   if (required.size > 0) {
     merged.required = Array.from(required);
@@ -237,7 +251,7 @@ function mergeSchemas(baseSchema, extraSchema) {
 }
 
 function resolveSchema(schema, depth = 0) {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return null;
   }
 
@@ -245,11 +259,18 @@ function resolveSchema(schema, depth = 0) {
     return schema;
   }
 
-  if (schema.$ref && !schema.properties && !schema.items && !schema.allOf && !schema.anyOf && !schema.oneOf) {
+  if (
+    schema.$ref &&
+    !schema.properties &&
+    !schema.items &&
+    !schema.allOf &&
+    !schema.anyOf &&
+    !schema.oneOf
+  ) {
     const description = schema.description
       ? `${schema.description} (ref: ${schema.$ref})`
       : `Schema reference: ${schema.$ref}`;
-    return { type: schema.type || "string", description };
+    return { type: schema.type || 'string', description };
   }
 
   if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
@@ -280,7 +301,7 @@ function resolveSchema(schema, depth = 0) {
 }
 
 function sanitizeSchemaNode(schema, depth = 0) {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return {};
   }
 
@@ -289,7 +310,7 @@ function sanitizeSchemaNode(schema, depth = 0) {
   }
 
   const resolved = resolveSchema(schema, depth);
-  if (!resolved || typeof resolved !== "object") {
+  if (!resolved || typeof resolved !== 'object') {
     return {};
   }
 
@@ -299,7 +320,7 @@ function sanitizeSchemaNode(schema, depth = 0) {
     node.type = type;
   }
 
-  if (typeof resolved.description === "string") {
+  if (typeof resolved.description === 'string') {
     node.description = resolved.description;
   }
 
@@ -311,22 +332,25 @@ function sanitizeSchemaNode(schema, depth = 0) {
     node.items = sanitizeSchemaNode(resolved.items, depth + 1);
   }
 
-  if (resolved.properties && typeof resolved.properties === "object") {
-    node.type = node.type || "object";
+  if (resolved.properties && typeof resolved.properties === 'object') {
+    node.type = node.type || 'object';
     node.properties = {};
     for (const [key, value] of Object.entries(resolved.properties)) {
       node.properties[key] = sanitizeSchemaNode(value, depth + 1);
     }
 
     if (Array.isArray(resolved.required)) {
-      node.required = resolved.required.filter((item) => typeof item === "string");
+      node.required = resolved.required.filter(
+        (item) => typeof item === 'string',
+      );
     }
   }
 
   if (resolved.additionalProperties !== undefined) {
-    node.additionalProperties = typeof resolved.additionalProperties === "boolean"
-      ? resolved.additionalProperties
-      : sanitizeSchemaNode(resolved.additionalProperties, depth + 1);
+    node.additionalProperties =
+      typeof resolved.additionalProperties === 'boolean'
+        ? resolved.additionalProperties
+        : sanitizeSchemaNode(resolved.additionalProperties, depth + 1);
   }
 
   return node;
@@ -336,7 +360,7 @@ function sanitizeToolSchema(schema) {
   const sanitized = sanitizeSchemaNode(schema);
   const normalized = { ...DEFAULT_TOOL_SCHEMA, ...sanitized };
 
-  if (!normalized.properties || typeof normalized.properties !== "object") {
+  if (!normalized.properties || typeof normalized.properties !== 'object') {
     normalized.properties = {};
   }
 
@@ -344,32 +368,41 @@ function sanitizeToolSchema(schema) {
     normalized.required = [];
   }
 
-  if (normalized.type !== "object" && Object.keys(normalized.properties).length === 0) {
+  if (
+    normalized.type !== 'object' &&
+    Object.keys(normalized.properties).length === 0
+  ) {
     return {
-      type: "object",
+      type: 'object',
       properties: {
-        input: sanitized.type ? sanitized : { type: "string" }
+        input: sanitized.type ? sanitized : { type: 'string' },
       },
-      required: []
+      required: [],
     };
   }
 
-  normalized.type = "object";
+  normalized.type = 'object';
   return normalized;
 }
 
 function normalizeToolDefinition(tool, index) {
-  if (!tool || typeof tool !== "object") {
+  if (!tool || typeof tool !== 'object') {
     return null;
   }
 
   const functionTool = tool.function || tool.custom || null;
   const rawName = tool.name || functionTool?.name || tool.custom?.name;
-  const name = typeof rawName === "string" && rawName.trim().length > 0
-    ? rawName.trim()
-    : `tool-${index + 1}`;
-  const description = tool.description || functionTool?.description || tool.custom?.description || "";
-  const rawSchema = tool.input_schema ||
+  const name =
+    typeof rawName === 'string' && rawName.trim().length > 0
+      ? rawName.trim()
+      : `tool-${index + 1}`;
+  const description =
+    tool.description ||
+    functionTool?.description ||
+    tool.custom?.description ||
+    '';
+  const rawSchema =
+    tool.input_schema ||
     tool.parameters ||
     functionTool?.input_schema ||
     functionTool?.parameters ||
@@ -378,8 +411,8 @@ function normalizeToolDefinition(tool, index) {
 
   return {
     name: String(name),
-    description: typeof description === "string" ? description : "",
-    input_schema: sanitizeToolSchema(rawSchema)
+    description: typeof description === 'string' ? description : '',
+    input_schema: sanitizeToolSchema(rawSchema),
   };
 }
 
@@ -400,31 +433,31 @@ function normalizeToolDefinitions(tools) {
 }
 
 function describeSchemaType(schema) {
-  if (!schema || typeof schema !== "object") {
-    return "any";
+  if (!schema || typeof schema !== 'object') {
+    return 'any';
   }
 
   if (Array.isArray(schema.type)) {
-    return schema.type.join(" | ");
+    return schema.type.join(' | ');
   }
 
-  if (typeof schema.type === "string") {
+  if (typeof schema.type === 'string') {
     return schema.type;
   }
 
   if (schema.enum) {
-    return "enum";
+    return 'enum';
   }
 
   if (schema.properties) {
-    return "object";
+    return 'object';
   }
 
   if (schema.items) {
-    return "array";
+    return 'array';
   }
 
-  return "any";
+  return 'any';
 }
 
 const MAX_SCHEMA_DEPTH = 4;
@@ -435,8 +468,8 @@ const MAX_ENUM_VALUES = 32;
 const MAX_ENUM_VALUE_CHARS = 80;
 
 function truncateToolDescription(value) {
-  if (typeof value !== "string") {
-    return "";
+  if (typeof value !== 'string') {
+    return '';
   }
   return value.length > MAX_TOOL_DESCRIPTION_CHARS
     ? `${value.slice(0, MAX_TOOL_DESCRIPTION_CHARS)}...`
@@ -444,8 +477,8 @@ function truncateToolDescription(value) {
 }
 
 function truncateSchemaDescription(value) {
-  if (typeof value !== "string") {
-    return "";
+  if (typeof value !== 'string') {
+    return '';
   }
   return value.length > MAX_PARAM_DESCRIPTION_CHARS
     ? `${value.slice(0, MAX_PARAM_DESCRIPTION_CHARS)}...`
@@ -453,70 +486,82 @@ function truncateSchemaDescription(value) {
 }
 
 function formatEnumHint(schema) {
-  if (!schema || typeof schema !== "object") {
-    return "";
+  if (!schema || typeof schema !== 'object') {
+    return '';
   }
   const values = Array.isArray(schema.enum) ? schema.enum : null;
   if (!values || values.length === 0) {
-    return "";
+    return '';
   }
 
   const rendered = [];
   for (const value of values.slice(0, MAX_ENUM_VALUES)) {
     if (value === null) {
-      rendered.push("null");
+      rendered.push('null');
       continue;
     }
     const type = typeof value;
-    if (type === "string") {
-      const trimmed = value.length > MAX_ENUM_VALUE_CHARS
-        ? `${value.slice(0, MAX_ENUM_VALUE_CHARS)}...`
-        : value;
+    if (type === 'string') {
+      const trimmed =
+        value.length > MAX_ENUM_VALUE_CHARS
+          ? `${value.slice(0, MAX_ENUM_VALUE_CHARS)}...`
+          : value;
       rendered.push(JSON.stringify(trimmed));
-    } else if (type === "number" || type === "boolean") {
+    } else if (type === 'number' || type === 'boolean') {
       rendered.push(String(value));
     }
   }
 
   if (rendered.length === 0) {
-    return "";
+    return '';
   }
 
-  const suffix = values.length > MAX_ENUM_VALUES
-    ? `, ... (${values.length - MAX_ENUM_VALUES} more)`
-    : "";
-  return ` — allowed: ${rendered.join(", ")}${suffix}`;
+  const suffix =
+    values.length > MAX_ENUM_VALUES
+      ? `, ... (${values.length - MAX_ENUM_VALUES} more)`
+      : '';
+  return ` — allowed: ${rendered.join(', ')}${suffix}`;
 }
 
 function formatSchemaDetailLines(schema, depth = 0) {
-  if (!schema || typeof schema !== "object" || depth >= MAX_SCHEMA_DEPTH) {
+  if (!schema || typeof schema !== 'object' || depth >= MAX_SCHEMA_DEPTH) {
     return [];
   }
 
   const lines = [];
-  const indent = "  ".repeat(depth);
+  const indent = '  '.repeat(depth);
 
-  if (schema.items && typeof schema.items === "object") {
+  if (schema.items && typeof schema.items === 'object') {
     const itemType = describeSchemaType(schema.items);
-    const itemDesc = schema.items.description ? `: ${truncateSchemaDescription(schema.items.description)}` : "";
+    const itemDesc = schema.items.description
+      ? `: ${truncateSchemaDescription(schema.items.description)}`
+      : '';
     const itemEnum = formatEnumHint(schema.items);
     lines.push(`${indent}- items [${itemType}]${itemDesc}${itemEnum}`);
     lines.push(...formatSchemaDetailLines(schema.items, depth + 1));
   }
 
-  if (schema.properties && typeof schema.properties === "object") {
-    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  if (schema.properties && typeof schema.properties === 'object') {
+    const required = new Set(
+      Array.isArray(schema.required) ? schema.required : [],
+    );
     const entries = Object.entries(schema.properties);
     for (const [name, propSchema] of entries.slice(0, MAX_SCHEMA_PROPERTIES)) {
-      const reqMark = required.has(name) ? " (required)" : "";
+      const reqMark = required.has(name) ? ' (required)' : '';
       const propType = describeSchemaType(propSchema);
-      const propDesc = propSchema.description ? `: ${truncateSchemaDescription(propSchema.description)}` : "";
+      const propDesc = propSchema.description
+        ? `: ${truncateSchemaDescription(propSchema.description)}`
+        : '';
       const propEnum = formatEnumHint(propSchema);
-      lines.push(`${indent}- ${name}${reqMark} [${propType}]${propDesc}${propEnum}`);
+      lines.push(
+        `${indent}- ${name}${reqMark} [${propType}]${propDesc}${propEnum}`,
+      );
       lines.push(...formatSchemaDetailLines(propSchema, depth + 1));
     }
     if (entries.length > MAX_SCHEMA_PROPERTIES) {
-      lines.push(`${indent}- ... (${entries.length - MAX_SCHEMA_PROPERTIES} more)`);
+      lines.push(
+        `${indent}- ... (${entries.length - MAX_SCHEMA_PROPERTIES} more)`,
+      );
     }
   }
 
@@ -536,9 +581,9 @@ export function transformTools(tools) {
 
   return normalizedTools.map((tool) => ({
     name: tool.name,
-    description: tool.description || "",
+    description: tool.description || '',
     input_schema: tool.input_schema,
-    parameters: tool.input_schema
+    parameters: tool.input_schema,
   }));
 }
 
@@ -553,41 +598,46 @@ export function transformToolChoice(toolChoice) {
   }
 
   const toolChoiceConfig = getToolChoiceConfig(toolChoice);
-  const applyDisableParallel = (value) => (
+  const applyDisableParallel = (value) =>
     toolChoiceConfig.disableParallelToolUse
       ? { ...value, disable_parallel_tool_use: true }
-      : value
-  );
+      : value;
 
   // Handle string shortcuts
-  if (typeof toolChoice === "string") {
-    if (toolChoice === "auto") {
-      return applyDisableParallel({ type: "auto" });
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'auto') {
+      return applyDisableParallel({ type: 'auto' });
     }
-    if (toolChoice === "any") {
-      return applyDisableParallel({ type: "required" });
+    if (toolChoice === 'any') {
+      return applyDisableParallel({ type: 'required' });
     }
-    if (toolChoice === "required") {
-      return applyDisableParallel({ type: "required" });
+    if (toolChoice === 'required') {
+      return applyDisableParallel({ type: 'required' });
     }
-    if (toolChoice === "none") {
-      return applyDisableParallel({ type: "none" });
+    if (toolChoice === 'none') {
+      return applyDisableParallel({ type: 'none' });
     }
   }
 
   // Handle object format
-  if (typeof toolChoice === "object") {
-    if (toolChoice.type === "auto") {
-      return applyDisableParallel({ type: "auto" });
+  if (typeof toolChoice === 'object') {
+    if (toolChoice.type === 'auto') {
+      return applyDisableParallel({ type: 'auto' });
     }
-    if (toolChoice.type === "any") {
-      return applyDisableParallel({ type: "required" });
+    if (toolChoice.type === 'any') {
+      return applyDisableParallel({ type: 'required' });
     }
-    if (toolChoice.type === "tool") {
-      return applyDisableParallel({ type: "function", function: { name: toolChoice.name } });
+    if (toolChoice.type === 'tool') {
+      return applyDisableParallel({
+        type: 'function',
+        function: { name: toolChoice.name },
+      });
     }
-    if (toolChoice.type === "function" && toolChoice.function?.name) {
-      return applyDisableParallel({ type: "function", function: { name: toolChoice.function.name } });
+    if (toolChoice.type === 'function' && toolChoice.function?.name) {
+      return applyDisableParallel({
+        type: 'function',
+        function: { name: toolChoice.function.name },
+      });
     }
   }
 
@@ -601,7 +651,7 @@ export function transformToolChoice(toolChoice) {
  */
 function formatToolUseBlock(block) {
   const inputStr =
-    typeof block.input === "string"
+    typeof block.input === 'string'
       ? block.input
       : JSON.stringify(block.input, null, 2);
   return `<tool_use id="${block.id}" name="${block.name}">\n${inputStr}\n</tool_use>`;
@@ -613,18 +663,18 @@ function formatToolUseBlock(block) {
  * @returns {string} Formatted string representation
  */
 function formatToolResultBlock(block) {
-  let content = "";
-  if (typeof block.content === "string") {
+  let content = '';
+  if (typeof block.content === 'string') {
     content = block.content;
   } else if (Array.isArray(block.content)) {
     // Handle array content (e.g., with text blocks)
     content = block.content
-      .filter((c) => c.type === "text")
+      .filter((c) => c.type === 'text')
       .map((c) => c.text)
-      .join("\n");
+      .join('\n');
   }
 
-  const errorAttr = block.is_error ? ' is_error="true"' : "";
+  const errorAttr = block.is_error ? ' is_error="true"' : '';
   return `<tool_result tool_use_id="${block.tool_use_id}"${errorAttr}>\n${content}\n</tool_result>`;
 }
 
@@ -634,27 +684,27 @@ function formatToolResultBlock(block) {
  * @returns {string} Extracted text content
  */
 function extractMessageContent(message) {
-  if (typeof message.content === "string") {
+  if (typeof message.content === 'string') {
     return message.content;
   }
 
   if (!Array.isArray(message.content)) {
-    return "";
+    return '';
   }
 
   const parts = [];
   for (const block of message.content) {
-    if (block.type === "text") {
+    if (block.type === 'text') {
       parts.push(block.text);
-    } else if (block.type === "tool_use") {
+    } else if (block.type === 'tool_use') {
       parts.push(formatToolUseBlock(block));
-    } else if (block.type === "tool_result") {
+    } else if (block.type === 'tool_result') {
       parts.push(formatToolResultBlock(block));
     }
     // Skip thinking blocks - they are internal model reasoning
   }
 
-  return parts.join("\n\n");
+  return parts.join('\n\n');
 }
 
 export function normalizeSystemPrompt(system) {
@@ -662,18 +712,18 @@ export function normalizeSystemPrompt(system) {
     return null;
   }
 
-  if (typeof system === "string") {
+  if (typeof system === 'string') {
     return system.trim().length > 0 ? system : null;
   }
 
   if (Array.isArray(system)) {
     const parts = [];
     for (const block of system) {
-      if (block?.type === "text" && typeof block.text === "string") {
+      if (block?.type === 'text' && typeof block.text === 'string') {
         parts.push(block.text);
       }
     }
-    const combined = parts.join("\n");
+    const combined = parts.join('\n');
     return combined.trim().length > 0 ? combined : null;
   }
 
@@ -694,9 +744,9 @@ function normalizeFiniteNumber(value) {
 
 export function normalizeStopSequences(value) {
   if (Array.isArray(value)) {
-    return value.filter((seq) => typeof seq === "string" && seq.length > 0);
+    return value.filter((seq) => typeof seq === 'string' && seq.length > 0);
   }
-  if (typeof value === "string" && value.length > 0) {
+  if (typeof value === 'string' && value.length > 0) {
     return [value];
   }
   return [];
@@ -713,7 +763,7 @@ export function extractThinkingConfig(anthropicRequest) {
   // Check explicit thinking parameter
   if (thinking) {
     return {
-      enabled: thinking.type === "enabled",
+      enabled: thinking.type === 'enabled',
       budgetTokens: thinking.budget_tokens || null,
     };
   }
@@ -726,12 +776,12 @@ export function extractThinkingConfig(anthropicRequest) {
 }
 
 function extractTextAndImages(content, imageDetail) {
-  if (typeof content === "string") {
+  if (typeof content === 'string') {
     return { text: content, images: [] };
   }
 
   if (!Array.isArray(content)) {
-    return { text: "", images: [] };
+    return { text: '', images: [] };
   }
 
   const textParts = [];
@@ -739,37 +789,37 @@ function extractTextAndImages(content, imageDetail) {
 
   for (const block of content) {
     if (!block) continue;
-    if (block.type === "text" && typeof block.text === "string") {
+    if (block.type === 'text' && typeof block.text === 'string') {
       textParts.push(block.text);
       continue;
     }
 
-    if (block.type === "tool_use") {
+    if (block.type === 'tool_use') {
       textParts.push(formatToolUseBlock(block));
       continue;
     }
 
-    if (block.type === "tool_result") {
+    if (block.type === 'tool_result') {
       textParts.push(formatToolResultBlock(block));
       continue;
     }
 
-    if (block.type === "image" && block.source) {
+    if (block.type === 'image' && block.source) {
       if (
-        block.source.type === "base64" &&
+        block.source.type === 'base64' &&
         block.source.data &&
         block.source.media_type
       ) {
         images.push({
-          type: "image_url",
+          type: 'image_url',
           image_url: {
             url: `data:${block.source.media_type};base64,${block.source.data}`,
             detail: imageDetail,
           },
         });
-      } else if (block.source.type === "url" && block.source.url) {
+      } else if (block.source.type === 'url' && block.source.url) {
         images.push({
-          type: "image_url",
+          type: 'image_url',
           image_url: {
             url: block.source.url,
             detail: imageDetail,
@@ -779,7 +829,35 @@ function extractTextAndImages(content, imageDetail) {
     }
   }
 
-  return { text: textParts.join("\n"), images };
+  return { text: textParts.join('\n'), images };
+}
+
+function findLastAssistantMessageIndex(messages) {
+  if (!Array.isArray(messages)) {
+    return -1;
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const role = messages[i]?.role;
+    if (role === 'assistant' || role === 'model') {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+function collectImagesFromMessages(messages, imageDetail) {
+  const images = [];
+
+  for (const message of messages) {
+    if (!Array.isArray(message?.content)) {
+      continue;
+    }
+    images.push(...extractTextAndImages(message.content, imageDetail).images);
+  }
+
+  return images;
 }
 
 /**
@@ -790,7 +868,7 @@ function extractTextAndImages(content, imageDetail) {
  */
 export function transformAnthropicToHopGPT(
   anthropicRequest,
-  conversationState = null
+  conversationState = null,
 ) {
   const {
     model,
@@ -805,32 +883,35 @@ export function transformAnthropicToHopGPT(
     stop_sequences,
     stop,
   } = anthropicRequest;
-  
+
   log.debug('Transforming Anthropic request to HopGPT', {
     model,
     messageCount: messages?.length || 0,
     hasSystem: !!system,
     toolCount: tools?.length || 0,
     hasToolChoice: !!tool_choice,
-    maxTokens: max_tokens
+    maxTokens: max_tokens,
   });
-  
-  const imageDetail = "high";
+
+  const imageDetail = 'high';
   // NOTE: Do NOT use a stop sequence that matches tool call markup. Some backends
   // strip stop sequences from output, which would truncate XML tool calls and
   // break parsing. Use a sentinel that is unlikely to appear in model output.
-  const toolCallStopSequence = "<|hopgpt_tool_stop|>";
+  const toolCallStopSequence = '<|hopgpt_tool_stop|>';
   const normalizedTools = normalizeToolDefinitions(tools);
 
   // Get thinking configuration
   const thinkingConfig = extractThinkingConfig(anthropicRequest);
   const processedMessages = prepareMessagesForThinking(messages, {
-    targetFamily: "claude",
-    thinkingEnabled: thinkingConfig.enabled
+    targetFamily: 'claude',
+    thinkingEnabled: thinkingConfig.enabled,
   });
+  const thinkingRecoveryInsertedMessages =
+    Array.isArray(messages) && processedMessages.length > messages.length;
+  const originalLastAssistantIndex = findLastAssistantMessageIndex(messages);
   const normalizedSystem = normalizeSystemPrompt(system);
   const stateSystem = normalizeSystemPrompt(
-    conversationState?.systemPrompt ?? conversationState?.system
+    conversationState?.systemPrompt ?? conversationState?.system,
   );
   const systemText = normalizedSystem ?? stateSystem;
   const systemChanged =
@@ -841,9 +922,9 @@ export function transformAnthropicToHopGPT(
   const latestMessage = processedMessages[processedMessages.length - 1];
 
   // Build text content - handle all content block types including tool_result
-  let text = "";
+  let text = '';
   let images = [];
-  if (typeof latestMessage.content === "string") {
+  if (typeof latestMessage.content === 'string') {
     text = latestMessage.content;
   } else if (Array.isArray(latestMessage.content)) {
     // Extract text from content blocks (skip thinking blocks in user messages)
@@ -852,14 +933,25 @@ export function transformAnthropicToHopGPT(
     images = extracted.images;
   }
 
-  const shouldIncludeHistory = isNewConversation && processedMessages.length > 1;
+  const shouldIncludeHistory =
+    isNewConversation && processedMessages.length > 1;
   if (shouldIncludeHistory) {
     text = buildConversationText(processedMessages, systemText);
-  } else if (
-    systemText &&
-    (isNewConversation || systemChanged || !stateSystem)
-  ) {
-    text = text ? `${systemText}\n\n${text}` : systemText;
+  } else {
+    if (thinkingRecoveryInsertedMessages && originalLastAssistantIndex >= 0) {
+      const currentTurnMessages = processedMessages.slice(
+        originalLastAssistantIndex + 1,
+      );
+      const currentTurnText = buildConversationText(currentTurnMessages);
+      if (currentTurnText) {
+        text = currentTurnText;
+      }
+      images = collectImagesFromMessages(currentTurnMessages, imageDetail);
+    }
+
+    if (systemText && (isNewConversation || systemChanged || !stateSystem)) {
+      text = text ? `${systemText}\n\n${text}` : systemText;
+    }
   }
 
   // Inject tool definitions into the prompt if tools are provided
@@ -872,7 +964,7 @@ export function transformAnthropicToHopGPT(
   // Get parent message ID for conversation threading
   const parentMessageId =
     conversationState?.lastAssistantMessageId ||
-    "00000000-0000-0000-0000-000000000000";
+    '00000000-0000-0000-0000-000000000000';
 
   // Generate timestamp in HopGPT format
   const clientTimestamp = new Date().toISOString().slice(0, 19);
@@ -880,19 +972,19 @@ export function transformAnthropicToHopGPT(
   // Build base request
   const hopGPTRequest = {
     text,
-    sender: "User",
+    sender: 'User',
     clientTimestamp,
     isCreatedByUser: true,
     parentMessageId,
     messageId: uuidv4(),
     error: false,
-    endpoint: "AnthropicClaude",
-    endpointType: "custom",
-    model: model || "claude-sonnet-4-20250514",
+    endpoint: 'AnthropicClaude',
+    endpointType: 'custom',
+    model: model || 'claude-sonnet-4-20250514',
     resendFiles: false,
     imageDetail,
-    key: "never",
-    modelDisplayLabel: "Claude",
+    key: 'never',
+    modelDisplayLabel: 'Claude',
     isTemporary: false,
     isRegenerate: false,
     isContinued: false,
@@ -948,11 +1040,14 @@ export function transformAnthropicToHopGPT(
 
   // Add reasoning/thinking parameters based on thinking config
   if (thinkingConfig.enabled) {
-    hopGPTRequest.reasoning_effort = "high";
-    hopGPTRequest.reasoning_summary = "detailed";
-    if (Number.isFinite(thinkingConfig.budgetTokens) && thinkingConfig.budgetTokens > 0) {
+    hopGPTRequest.reasoning_effort = 'high';
+    hopGPTRequest.reasoning_summary = 'detailed';
+    if (
+      Number.isFinite(thinkingConfig.budgetTokens) &&
+      thinkingConfig.budgetTokens > 0
+    ) {
       hopGPTRequest.thinking = {
-        type: "enabled",
+        type: 'enabled',
         budget_tokens: Math.floor(thinkingConfig.budgetTokens),
       };
     }
@@ -963,7 +1058,7 @@ export function transformAnthropicToHopGPT(
     textLength: text.length,
     hasImages: images.length > 0,
     toolsInjected: !!toolInjection,
-    isNewConversation
+    isNewConversation,
   });
 
   return hopGPTRequest;
@@ -978,7 +1073,7 @@ export function transformAnthropicToHopGPT(
  * as they are internal model reasoning and should not be in conversation text
  */
 export function buildConversationText(messages, system = null) {
-  let parts = [];
+  const parts = [];
   const systemText = normalizeSystemPrompt(system);
 
   if (systemText) {
@@ -986,7 +1081,7 @@ export function buildConversationText(messages, system = null) {
   }
 
   for (const msg of messages) {
-    const role = msg.role === "user" ? "Human" : "Assistant";
+    const role = msg.role === 'user' ? 'Human' : 'Assistant';
     const content = extractMessageContent(msg);
 
     if (content) {
@@ -994,7 +1089,7 @@ export function buildConversationText(messages, system = null) {
     }
   }
 
-  return parts.join("\n\n");
+  return parts.join('\n\n');
 }
 
 /**
@@ -1006,7 +1101,7 @@ export function hasThinkingContent(message) {
   if (!message || !Array.isArray(message.content)) {
     return false;
   }
-  return message.content.some((block) => block.type === "thinking");
+  return message.content.some((block) => block.type === 'thinking');
 }
 
 /**
@@ -1021,7 +1116,7 @@ export function extractThinkingSignature(message) {
   }
 
   for (const block of message.content) {
-    if (block.type === "thinking" && block.signature) {
+    if (block.type === 'thinking' && block.signature) {
       return block.signature;
     }
   }
