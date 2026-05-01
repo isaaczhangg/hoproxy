@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
-import { cacheThinkingSignature, cacheToolSignature } from './signatureCache.js';
-import { normalizeMaxTokens, normalizeStopSequences } from './anthropicToHopGPT.js';
 import { loggers } from '../utils/logger.js';
+import { normalizeMaxTokens, normalizeStopSequences } from './anthropicToHopGPT.js';
+import { cacheThinkingSignature, cacheToolSignature } from './signatureCache.js';
 
 const log = loggers.transform;
 
@@ -11,7 +11,8 @@ const MCP_TOOL_CALL_START_TAG = '<mcp_tool_call';
 
 // Pattern for <function_calls> blocks (used by OpenCode)
 // Also matches <function_calls> used by Claude Code
-const FUNCTION_CALLS_BLOCK_RE = /<(?:antml:)?function_calls\b[\s\S]*?<\/(?:antml:)?function_calls>/gi;
+const FUNCTION_CALLS_BLOCK_RE =
+  /<(?:antml:)?function_calls\b[\s\S]*?<\/(?:antml:)?function_calls>/gi;
 const FUNCTION_CALLS_START_TAG = '<function_calls';
 const ANTML_FUNCTION_CALLS_START_TAG = '<antml:function_calls';
 
@@ -38,19 +39,19 @@ const TOOL_TAG_NAMES = [
   'tool_call',
   'tool_use',
   'invoke',
-  'antml:invoke'
+  'antml:invoke',
 ];
 
 const TOOL_TAG_NAME_SET = new Set(TOOL_TAG_NAMES);
 
 const TOOL_TAG_CLOSINGS = {
-  'mcp_tool_call': ['</mcp_tool_call>'],
-  'function_calls': ['</function_calls>', '</antml:function_calls>'],
+  mcp_tool_call: ['</mcp_tool_call>'],
+  function_calls: ['</function_calls>', '</antml:function_calls>'],
   'antml:function_calls': ['</antml:function_calls>', '</function_calls>'],
-  'invoke': ['</invoke>', '</antml:invoke>'],
+  invoke: ['</invoke>', '</antml:invoke>'],
   'antml:invoke': ['</antml:invoke>', '</invoke>'],
-  'tool_call': ['</tool_call>', '</tool_use>'],
-  'tool_use': ['</tool_use>', '</tool_call>']
+  tool_call: ['</tool_call>', '</tool_use>'],
+  tool_use: ['</tool_use>', '</tool_call>'],
 };
 
 // Helper function to parse environment variable as positive integer
@@ -62,7 +63,7 @@ function parsePositiveInt(envVar, defaultValue) {
 const DEFAULT_MAX_TOOL_CALL_BUFFER_SIZE = 1000000;
 const MAX_TOOL_CALL_BUFFER_SIZE = parsePositiveInt(
   process.env.HOPGPT_TOOL_CALL_BUFFER_SIZE,
-  DEFAULT_MAX_TOOL_CALL_BUFFER_SIZE
+  DEFAULT_MAX_TOOL_CALL_BUFFER_SIZE,
 );
 
 const DEFAULT_TOOL_CALL_BUFFER_WARN_THRESHOLD = 50000;
@@ -70,12 +71,12 @@ const DEFAULT_TOOL_CALL_BUFFER_WARN_STEP = 200000;
 
 const TOOL_CALL_BUFFER_WARN_THRESHOLD = parsePositiveInt(
   process.env.HOPGPT_TOOL_CALL_BUFFER_WARN_THRESHOLD,
-  DEFAULT_TOOL_CALL_BUFFER_WARN_THRESHOLD
+  DEFAULT_TOOL_CALL_BUFFER_WARN_THRESHOLD,
 );
 
 const TOOL_CALL_BUFFER_WARN_STEP = parsePositiveInt(
   process.env.HOPGPT_TOOL_CALL_BUFFER_WARN_STEP,
-  DEFAULT_TOOL_CALL_BUFFER_WARN_STEP
+  DEFAULT_TOOL_CALL_BUFFER_WARN_STEP,
 );
 
 const VALID_JSON_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']);
@@ -83,14 +84,14 @@ const TOOL_INSTRUCTION_MARKERS = [
   '# available tools',
   '## tool definitions',
   'you have access to the following tools',
-  'important: you must use this exact xml format to call tools'
+  'important: you must use this exact xml format to call tools',
 ];
 const SANITIZE_TAIL_LENGTH = 120;
 const DUPLICATE_TEXT_CHUNK_MIN_LENGTH = 80;
 const ROLE_PREFIX_RE = /(^|\r?\n)\s*(?:H:|A:|Human:|Assistant:)\s*/g;
 
 function includesAny(haystack, needles) {
-  return needles.some(tag => haystack.includes(tag));
+  return needles.some((tag) => haystack.includes(tag));
 }
 
 function findToolInstructionStartIndex(text, fromIndex = 0) {
@@ -159,9 +160,7 @@ function normalizeToolNameToken(value) {
   }
   // Remove all non-alphanumeric characters for fuzzy matching
   // This allows "todo_write" to match "todowrite"
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '');
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 function isLikelyToolTagStart(text, index, tagName) {
@@ -205,6 +204,25 @@ function findNextToolTag(text, fromIndex) {
     return { index, tagName, startTagEnd };
   }
   return null;
+}
+
+function hasToolTagStartOrPartial(text) {
+  if (!text) {
+    return false;
+  }
+
+  if (findNextToolTag(text, 0)) {
+    return true;
+  }
+
+  const lastLt = text.lastIndexOf('<');
+  if (lastLt === -1) {
+    return false;
+  }
+
+  const possibleTag = text.slice(lastLt).toLowerCase();
+  const matchingTag = TOOL_TAG_NAMES.find((tag) => `<${tag}`.startsWith(possibleTag));
+  return !!matchingTag && isLikelyToolTagStart(text, lastLt, matchingTag);
 }
 
 /**
@@ -328,7 +346,13 @@ function findClosingTagByLastOccurrence(text, fromIndex, tagName, boundaryTags =
     if (nextOpenIdx === -1) break;
     // Make sure it's actually a tag (followed by whitespace or >)
     const afterTag = text[nextOpenIdx + openTagPattern.length];
-    if (afterTag === '>' || afterTag === ' ' || afterTag === '\t' || afterTag === '\n' || afterTag === '\r') {
+    if (
+      afterTag === '>' ||
+      afterTag === ' ' ||
+      afterTag === '\t' ||
+      afterTag === '\n' ||
+      afterTag === '\r'
+    ) {
       boundaryIndex = Math.min(boundaryIndex, nextOpenIdx);
       break;
     }
@@ -649,9 +673,11 @@ function repairMalformedStringEscapes(jsonStr) {
 
       if (ch === '"') {
         const nextNonWhitespace = findNextNonWhitespace(jsonStr, i + 1);
-        if (nextNonWhitespace === null ||
-            nextNonWhitespace === ':' ||
-            ',}]'.includes(nextNonWhitespace)) {
+        if (
+          nextNonWhitespace === null ||
+          nextNonWhitespace === ':' ||
+          ',}]'.includes(nextNonWhitespace)
+        ) {
           inString = false;
           result += ch;
         } else {
@@ -723,9 +749,7 @@ function parseJsonWithRepair(jsonText) {
   for (const attempt of attempts) {
     try {
       return JSON.parse(attempt);
-    } catch (error) {
-      continue;
-    }
+    } catch (error) {}
   }
 
   return null;
@@ -758,7 +782,7 @@ function parseToolCallJsonContent(jsonContent) {
   return {
     toolName,
     arguments: parseEmbeddedJson(args),
-    toolUseId: parsed.id || parsed.toolUseId || null
+    toolUseId: parsed.id || parsed.toolUseId || null,
   };
 }
 
@@ -782,7 +806,13 @@ function normalizeQuestionOption(option) {
     return option;
   }
 
-  const fallback = pickFirstString(option.label, option.value, option.text, option.title, option.name);
+  const fallback = pickFirstString(
+    option.label,
+    option.value,
+    option.text,
+    option.title,
+    option.name,
+  );
   if (fallback !== null) {
     return { ...option, description: fallback };
   }
@@ -814,7 +844,7 @@ function normalizeQuestionsInput(input) {
         question.question,
         question.title,
         question.text,
-        question.prompt
+        question.prompt,
       );
       if (headerFallback) {
         normalized = { ...normalized, header: headerFallback };
@@ -1001,7 +1031,6 @@ function repairMalformedArrayJson(jsonStr) {
         valueStarts.push(k);
       }
       i = j;
-      continue;
     }
   }
 
@@ -1053,7 +1082,7 @@ function repairMalformedArrayJson(jsonStr) {
 
     modifications.push({
       insertOpenBracket: startOfValue,
-      insertCloseBracket: arrayEnd + 1
+      insertCloseBracket: arrayEnd + 1,
     });
   }
 
@@ -1092,7 +1121,7 @@ function parseMcpToolCallBlock(block) {
   return {
     serverName,
     toolName,
-    arguments: parsedArgs
+    arguments: parsedArgs,
   };
 }
 
@@ -1126,7 +1155,10 @@ function parseInvokeBlock(invokeBlock) {
     const paramStart = paramTagMatch.index;
 
     // Determine if this is an antml: prefixed parameter
-    const isAntml = invokeBlock.slice(paramStart, paramStart + 20).toLowerCase().includes('antml:');
+    const isAntml = invokeBlock
+      .slice(paramStart, paramStart + 20)
+      .toLowerCase()
+      .includes('antml:');
     const tagBaseName = isAntml ? 'antml:parameter' : 'parameter';
 
     // Extract the parameter name from the tag
@@ -1162,7 +1194,12 @@ function parseInvokeBlock(invokeBlock) {
     // Use last-occurrence strategy to find the proper closing tag
     // This handles cases where the parameter value contains </parameter> as text
     // by finding the LAST closing tag before the next parameter or end of invoke
-    let closingMatch = findClosingTagByLastOccurrence(invokeBlock, valueStartPos, tagBaseName, boundaryTags);
+    let closingMatch = findClosingTagByLastOccurrence(
+      invokeBlock,
+      valueStartPos,
+      tagBaseName,
+      boundaryTags,
+    );
 
     // Fall back to JSON-string-aware matching
     if (!closingMatch) {
@@ -1185,7 +1222,7 @@ function parseInvokeBlock(invokeBlock) {
   return {
     serverName: null,
     toolName,
-    arguments: args
+    arguments: args,
   };
 }
 
@@ -1260,7 +1297,7 @@ function parseToolCallJsonBlock(block) {
       serverName: null,
       toolName: toolCall.toolName,
       toolUseId: toolCall.toolUseId,
-      arguments: toolCall.arguments
+      arguments: toolCall.arguments,
     };
   } catch (error) {
     log.warn('Failed to parse tool_call JSON', { error: error.message });
@@ -1287,7 +1324,7 @@ function parseToolUseBlock(block) {
       serverName: null,
       toolName: toolCall.toolName,
       toolUseId: toolUseId || toolCall.toolUseId,
-      arguments: toolCall.arguments
+      arguments: toolCall.arguments,
     };
   }
 
@@ -1310,7 +1347,7 @@ function parseToolUseBlock(block) {
     serverName: null,
     toolName,
     toolUseId,
-    arguments: parsedArgs
+    arguments: parsedArgs,
   };
 }
 
@@ -1396,12 +1433,14 @@ function parseIncompleteToolCallBlocks(block, options = {}) {
     if (!toolCall) {
       return [];
     }
-    return [{
-      serverName: null,
-      toolName: toolCall.toolName,
-      toolUseId: toolCall.toolUseId,
-      arguments: toolCall.arguments
-    }];
+    return [
+      {
+        serverName: null,
+        toolName: toolCall.toolName,
+        toolUseId: toolCall.toolUseId,
+        arguments: toolCall.arguments,
+      },
+    ];
   }
 
   if (leadingTag === 'tool_use') {
@@ -1426,12 +1465,14 @@ function parseIncompleteToolCallBlocks(block, options = {}) {
         }
         parsedArgs = repairedInput !== null ? repairedInput : { _raw: trimmedInput };
       }
-      return [{
-        serverName: null,
-        toolName,
-        toolUseId,
-        arguments: parsedArgs
-      }];
+      return [
+        {
+          serverName: null,
+          toolName,
+          toolUseId,
+          arguments: parsedArgs,
+        },
+      ];
     }
 
     if (!inputText) {
@@ -1441,12 +1482,14 @@ function parseIncompleteToolCallBlocks(block, options = {}) {
     if (!toolCall) {
       return [];
     }
-    return [{
-      serverName: null,
-      toolName: toolCall.toolName,
-      toolUseId: toolUseId || toolCall.toolUseId,
-      arguments: toolCall.arguments
-    }];
+    return [
+      {
+        serverName: null,
+        toolName: toolCall.toolName,
+        toolUseId: toolUseId || toolCall.toolUseId,
+        arguments: toolCall.arguments,
+      },
+    ];
   }
 
   return [];
@@ -1495,7 +1538,7 @@ function splitStreamTextForMcpToolCalls(text) {
     const potentialRemainder = trailing.slice(startIndex);
     if (potentialRemainder.length > MAX_BUFFER_SIZE) {
       const incompleteBlocks = parseIncompleteToolCallBlocks(potentialRemainder, {
-        allowFunctionCalls: false
+        allowFunctionCalls: false,
       });
       if (incompleteBlocks.length > 0) {
         if (startIndex > 0) {
@@ -1521,7 +1564,7 @@ function splitStreamTextForMcpToolCalls(text) {
   const lastLt = trailing.lastIndexOf('<');
   if (lastLt !== -1) {
     const possibleTag = trailing.slice(lastLt);
-    const matchingTag = TOOL_TAG_NAMES.find(tag => `<${tag}`.startsWith(possibleTag));
+    const matchingTag = TOOL_TAG_NAMES.find((tag) => `<${tag}`.startsWith(possibleTag));
     if (matchingTag && isLikelyToolTagStart(trailing, lastLt, matchingTag)) {
       if (lastLt > 0) {
         segments.push({ type: 'text', text: trailing.slice(0, lastLt) });
@@ -1543,11 +1586,13 @@ export function isThinkingModel(model) {
   if (!model) return false;
   const modelLower = model.toLowerCase();
   // Models with "-thinking" suffix or explicit thinking models
-  return modelLower.includes('-thinking') ||
-         modelLower.includes('thinking') ||
-         // Claude Opus 4.5 models may support thinking with explicit parameter
-         modelLower.includes('opus-4.5') ||
-         modelLower.includes('opus-4-5');
+  return (
+    modelLower.includes('-thinking') ||
+    modelLower.includes('thinking') ||
+    // Claude Opus 4.5 models may support thinking with explicit parameter
+    modelLower.includes('opus-4.5') ||
+    modelLower.includes('opus-4-5')
+  );
 }
 
 /**
@@ -1568,16 +1613,35 @@ function mapStopReason(value) {
     return null;
   }
   const normalized = value.toLowerCase();
-  if (normalized === 'stop_sequence' || normalized === 'stop-sequence' || normalized === 'stopsequence') {
+  if (
+    normalized === 'stop_sequence' ||
+    normalized === 'stop-sequence' ||
+    normalized === 'stopsequence'
+  ) {
     return 'stop_sequence';
   }
-  if (normalized === 'max_tokens' || normalized === 'max-tokens' || normalized === 'length' || normalized === 'max_tokens_exceeded') {
+  if (
+    normalized === 'max_tokens' ||
+    normalized === 'max-tokens' ||
+    normalized === 'length' ||
+    normalized === 'max_tokens_exceeded'
+  ) {
     return 'max_tokens';
   }
-  if (normalized === 'tool_use' || normalized === 'tool-use' || normalized === 'tool' || normalized === 'function_call') {
+  if (
+    normalized === 'tool_use' ||
+    normalized === 'tool-use' ||
+    normalized === 'tool' ||
+    normalized === 'function_call'
+  ) {
     return 'tool_use';
   }
-  if (normalized === 'end_turn' || normalized === 'end-turn' || normalized === 'stop' || normalized === 'eos') {
+  if (
+    normalized === 'end_turn' ||
+    normalized === 'end-turn' ||
+    normalized === 'stop' ||
+    normalized === 'eos'
+  ) {
     return 'end_turn';
   }
   return null;
@@ -1600,14 +1664,14 @@ export class HopGPTToAnthropicTransformer {
 
     // Thinking support
     this.thinkingEnabled = options.thinkingEnabled ?? isThinkingModel(model);
-    this.currentBlockIndex = -1;  // Will be incremented when blocks start
+    this.currentBlockIndex = -1; // Will be incremented when blocks start
     this.currentBlockType = null; // 'thinking', 'text', or 'tool_use'
-    this.blockStarted = false;    // Track if current block has started
+    this.blockStarted = false; // Track if current block has started
     this.hasEmittedNonThinkingContent = false;
 
     // Accumulated content for non-streaming responses
-    this.contentBlocks = [];      // Array of {type, content, signature?}
-    this.accumulatedText = '';    // For backward compatibility
+    this.contentBlocks = []; // Array of {type, content, signature?}
+    this.accumulatedText = ''; // For backward compatibility
     this.accumulatedThinking = '';
     this.thinkingSignature = null;
     this.mcpToolCallBuffer = '';
@@ -1615,9 +1679,9 @@ export class HopGPTToAnthropicTransformer {
     this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
 
     // Tool use support
-    this.currentToolUse = null;   // Current tool use being streamed {id, name, inputJson}
+    this.currentToolUse = null; // Current tool use being streamed {id, name, inputJson}
     this.accumulatedToolUses = []; // All completed tool uses
-    this.hasToolUse = false;      // Track if response contains tool use
+    this.hasToolUse = false; // Track if response contains tool use
 
     // MCP tool call passthrough mode - when enabled, <mcp_tool_call> blocks are
     // passed through as text instead of being converted to tool_use blocks.
@@ -1627,8 +1691,8 @@ export class HopGPTToAnthropicTransformer {
 
     this.availableToolNames = Array.isArray(options.toolNames)
       ? options.toolNames
-        .filter((name) => typeof name === 'string' && name.trim().length > 0)
-        .map((name) => name.trim())
+          .filter((name) => typeof name === 'string' && name.trim().length > 0)
+          .map((name) => name.trim())
       : [];
     this.availableToolNameSet = new Set(this.availableToolNames);
     this.availableToolNameLowerMap = new Map();
@@ -1640,7 +1704,7 @@ export class HopGPTToAnthropicTransformer {
       }
       this.availableToolNamesNormalized.push({
         name,
-        normalized: normalizeToolNameToken(name)
+        normalized: normalizeToolNameToken(name),
       });
     }
     this.genericMcpToolName = this._detectGenericMcpToolName();
@@ -1687,7 +1751,8 @@ export class HopGPTToAnthropicTransformer {
       if (createdMessageId && !this.responseMessageId) {
         this.responseMessageId = createdMessageId;
       }
-      const createdConversationId = data.message?.conversationId || data.conversation?.conversationId;
+      const createdConversationId =
+        data.message?.conversationId || data.conversation?.conversationId;
       if (createdConversationId && !this.conversationId) {
         this.conversationId = createdConversationId;
       }
@@ -1746,14 +1811,14 @@ export class HopGPTToAnthropicTransformer {
       }
       this.inputTokens = data.responseMessage?.promptTokens || 0;
       this.outputTokens = data.responseMessage?.tokenCount || 0;
-      this.hopGPTStopReason = data.responseMessage?.stopReason ??
+      this.hopGPTStopReason =
+        data.responseMessage?.stopReason ??
         data.responseMessage?.stop_reason ??
         data.responseMessage?.finishReason ??
         data.responseMessage?.finish_reason ??
         null;
-      this.hopGPTStopSequence = data.responseMessage?.stopSequence ??
-        data.responseMessage?.stop_sequence ??
-        null;
+      this.hopGPTStopSequence =
+        data.responseMessage?.stopSequence ?? data.responseMessage?.stop_sequence ?? null;
 
       // Check for thoughtSignature in final response
       if (data.responseMessage?.thoughtSignature) {
@@ -1786,11 +1851,12 @@ export class HopGPTToAnthropicTransformer {
             type: 'error',
             error: {
               type: 'api_error',
-              message: typeof errorBlock.error === 'string'
-                ? errorBlock.error
-                : (errorBlock.message || 'HopGPT returned an error')
-            }
-          }
+              message:
+                typeof errorBlock.error === 'string'
+                  ? errorBlock.error
+                  : errorBlock.message || 'HopGPT returned an error',
+            },
+          },
         });
         const stopEvents = this._createMessageStop();
         if (stopEvents) {
@@ -1820,7 +1886,7 @@ export class HopGPTToAnthropicTransformer {
     log.debug('Unknown HopGPT event dropped', {
       event: data.event,
       hasFinal: !!data.final,
-      hasCreated: !!data.created
+      hasCreated: !!data.created,
     });
     return null;
   }
@@ -1830,7 +1896,7 @@ export class HopGPTToAnthropicTransformer {
       return '';
     }
 
-    let source = `${this._textSanitizeBuffer}${text}`;
+    const source = `${this._textSanitizeBuffer}${text}`;
     this._textSanitizeBuffer = '';
     let output = '';
 
@@ -1911,6 +1977,12 @@ export class HopGPTToAnthropicTransformer {
    */
   _processContentBlock(block) {
     const events = [];
+    const isTextBlock = block.type === 'text' && typeof block.text === 'string';
+    const isIndexlessToolCallText =
+      this.thinkingEnabled &&
+      isTextBlock &&
+      typeof block.index !== 'number' &&
+      (this.mcpToolCallBuffer || hasToolTagStartOrPartial(block.text));
 
     // Handle thinking blocks. HopGPT emits several shapes:
     //   - Anthropic: { type: "thinking", thinking: "...", signature: "..." }
@@ -1923,9 +1995,9 @@ export class HopGPTToAnthropicTransformer {
     //     indexless text delta from a non-thinking backend is ordinary content.
     const isIndexlessReasoningText =
       this.thinkingEnabled &&
-      block.type === 'text' &&
-      typeof block.text === 'string' &&
-      typeof block.index !== 'number';
+      isTextBlock &&
+      typeof block.index !== 'number' &&
+      !isIndexlessToolCallText;
 
     const isThinkingBlock =
       (block.type === 'thinking' && block.thinking) ||
@@ -1940,116 +2012,18 @@ export class HopGPTToAnthropicTransformer {
         return events.length > 0 ? events : null;
       }
 
-      if (this.blockStarted && this.currentBlockType !== 'thinking') {
-        events.push(this._createBlockStop());
-      }
-
-      if (!this.blockStarted || this.currentBlockType !== 'thinking') {
-        const startEvent = this._createBlockStart('thinking');
-        if (Array.isArray(startEvent)) {
-          events.push(...startEvent);
-        } else if (startEvent) {
-          events.push(startEvent);
-        }
-      }
-
-      this.accumulatedThinking += thinkingText;
-      events.push({
-        event: 'content_block_delta',
-        data: {
-          type: 'content_block_delta',
-          index: this.currentBlockIndex,
-          delta: {
-            type: 'thinking_delta',
-            thinking: thinkingText
-          }
-        }
-      });
-
-      if (signature) {
-        this.thinkingSignature = signature;
-        cacheThinkingSignature(this.thinkingSignature, 'claude');
-      }
-
+      events.push(...this._emitThinkingDelta(thinkingText, signature));
       return events;
     }
 
     // Handle text blocks
     if (block.type === 'text' && block.text) {
-      const sanitizedText = this._sanitizeTextChunk(block.text);
-      if (!sanitizedText) {
-        return events.length > 0 ? events : null;
-      }
-
-      // In passthrough mode, don't parse MCP tool calls - just emit text as-is
-      if (this.mcpPassthrough) {
-        events.push(...this._emitTextDelta(sanitizedText));
-        return events.length > 0 ? events : null;
-      }
-
-      if (process.env.HOPGPT_DEBUG === 'true') {
-        const hasToolCallTag = sanitizedText.includes('<tool_call') ||
-                               includesAny(sanitizedText, FUNCTION_CALLS_TAGS) ||
-                               sanitizedText.includes(MCP_TOOL_CALL_START_TAG) ||
-                               sanitizedText.includes(TOOL_USE_START_TAG) ||
-                               includesAny(sanitizedText, INVOKE_TAGS);
-        if (hasToolCallTag) {
-          log.debug('Text contains tool call XML', { preview: sanitizedText.slice(0, 200) });
-        }
-      }
-
-      const combined = `${this.mcpToolCallBuffer}${sanitizedText}`;
-      const { segments, remainder } = splitStreamTextForMcpToolCalls(combined);
-      this.mcpToolCallBuffer = remainder;
-
-      if (!remainder) {
-        this._toolBufferWarningEmitted = false;
-        this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
-      }
-
-      if (remainder && remainder.length >= this._nextToolBufferWarningAt) {
-        const preview = remainder.slice(0, 200);
-        log.warn('Large tool call buffer detected', {
-          size: remainder.length,
-          nextWarningAt: this._nextToolBufferWarningAt,
-          preview
-        });
-        if (TOOL_CALL_BUFFER_WARN_STEP > 0) {
-          const steps = Math.floor(
-            (remainder.length - this._nextToolBufferWarningAt) / TOOL_CALL_BUFFER_WARN_STEP
-          ) + 1;
-          this._nextToolBufferWarningAt += steps * TOOL_CALL_BUFFER_WARN_STEP;
-        } else {
-          this._nextToolBufferWarningAt = remainder.length + 1;
-        }
-      }
-
-      if (process.env.HOPGPT_DEBUG === 'true') {
-        const toolCalls = segments.filter(s => s.type === 'tool_call');
-        if (toolCalls.length > 0) {
-          log.debug('Parsed tool calls from text', {
-            count: toolCalls.length,
-            tools: toolCalls.map(tc => tc.toolCall?.toolName)
-          });
-        }
-      }
-
-      for (const segment of segments) {
-        if (segment.type === 'text') {
-          events.push(...this._emitTextDelta(segment.text));
-          continue;
-        }
-        if (segment.type === 'tool_call') {
-          const toolBlock = this._buildToolUseFromCall(segment.toolCall);
-          if (toolBlock) {
-            events.push(...this._processToolUseBlock(toolBlock));
-          }
-          if (this.stopOnToolUse) {
-            break;
-          }
-        }
-      }
-
+      events.push(
+        ...this._processTextBlock(block.text, {
+          routeTextToThinking: isIndexlessToolCallText && !this.mcpPassthrough,
+          suppressTextAfterToolUse: isIndexlessToolCallText,
+        }),
+      );
       return events.length > 0 ? events : null;
     }
 
@@ -2082,7 +2056,7 @@ export class HopGPTToAnthropicTransformer {
         this.contentBlocks.push({
           type: 'thinking',
           thinking: block.thinking || block.text || this.accumulatedThinking,
-          signature: signature || this.thinkingSignature
+          signature: signature || this.thinkingSignature,
         });
       } else if (block.type === 'text') {
         // In passthrough mode, don't parse MCP tool calls - preserve text as-is
@@ -2090,14 +2064,16 @@ export class HopGPTToAnthropicTransformer {
           const sanitizedText = sanitizeTextFull(block.text || '');
           if (sanitizedText) {
             const lastBlock = this.contentBlocks[this.contentBlocks.length - 1];
-            if (lastBlock?.type === 'text' &&
-                sanitizedText.length >= DUPLICATE_TEXT_CHUNK_MIN_LENGTH &&
-                sanitizedText === lastBlock.text) {
+            if (
+              lastBlock?.type === 'text' &&
+              sanitizedText.length >= DUPLICATE_TEXT_CHUNK_MIN_LENGTH &&
+              sanitizedText === lastBlock.text
+            ) {
               continue;
             }
             this.contentBlocks.push({
               type: 'text',
-              text: sanitizedText
+              text: sanitizedText,
             });
             this.accumulatedText += sanitizedText;
           }
@@ -2113,14 +2089,16 @@ export class HopGPTToAnthropicTransformer {
           if (segment.type === 'text') {
             if (!segment.text) continue;
             const lastBlock = this.contentBlocks[this.contentBlocks.length - 1];
-            if (lastBlock?.type === 'text' &&
-                segment.text.length >= DUPLICATE_TEXT_CHUNK_MIN_LENGTH &&
-                segment.text === lastBlock.text) {
+            if (
+              lastBlock?.type === 'text' &&
+              segment.text.length >= DUPLICATE_TEXT_CHUNK_MIN_LENGTH &&
+              segment.text === lastBlock.text
+            ) {
               continue;
             }
             this.contentBlocks.push({
               type: 'text',
-              text: segment.text
+              text: segment.text,
             });
             this.accumulatedText += segment.text;
             continue;
@@ -2135,7 +2113,7 @@ export class HopGPTToAnthropicTransformer {
               type: 'tool_use',
               id: toolBlock.id,
               name: toolBlock.name,
-              input: toolBlock.input
+              input: toolBlock.input,
             });
             if (this.stopOnToolUse) {
               stopAfterTool = true;
@@ -2160,7 +2138,7 @@ export class HopGPTToAnthropicTransformer {
           type: 'tool_use',
           id: block.id || generateToolUseId(),
           name: block.name || '',
-          input: input || {}
+          input: input || {},
         });
         if (this.stopOnToolUse) {
           stopAfterTool = true;
@@ -2183,8 +2161,7 @@ export class HopGPTToAnthropicTransformer {
       }
 
       const isThoughtBlock =
-        (block.type === 'thinking' && block.thinking) ||
-        block.thought === true;
+        (block.type === 'thinking' && block.thinking) || block.thought === true;
       if (isThoughtBlock) {
         const blockEvents = this._processContentBlock(block);
         if (blockEvents) {
@@ -2241,6 +2218,149 @@ export class HopGPTToAnthropicTransformer {
     return events;
   }
 
+  _emitThinkingDelta(text, signature = null) {
+    if (!text) {
+      return [];
+    }
+
+    const events = [];
+
+    if (this.blockStarted && this.currentBlockType !== 'thinking') {
+      if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
+        this.accumulatedToolUses.push({ ...this.currentToolUse });
+        this.currentToolUse = null;
+      }
+      events.push(this._createBlockStop());
+    }
+
+    if (!this.blockStarted || this.currentBlockType !== 'thinking') {
+      const startEvent = this._createBlockStart('thinking');
+      if (Array.isArray(startEvent)) {
+        events.push(...startEvent);
+      } else if (startEvent) {
+        events.push(startEvent);
+      }
+    }
+
+    this.accumulatedThinking += text;
+    events.push({
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: this.currentBlockIndex,
+        delta: {
+          type: 'thinking_delta',
+          thinking: text,
+        },
+      },
+    });
+
+    if (signature) {
+      this.thinkingSignature = signature;
+      cacheThinkingSignature(this.thinkingSignature, 'claude');
+    }
+
+    return events;
+  }
+
+  _processTextBlock(text, options = {}) {
+    const { routeTextToThinking = false, suppressTextAfterToolUse = false } = options;
+    const events = [];
+    let sanitizedText = this._sanitizeTextChunk(text);
+    const shouldFlushForToolParsing =
+      !this.mcpPassthrough &&
+      (this.mcpToolCallBuffer ||
+        hasToolTagStartOrPartial(text) ||
+        hasToolTagStartOrPartial(sanitizedText));
+    if (shouldFlushForToolParsing) {
+      sanitizedText += this._flushSanitizedText();
+    }
+    if (!sanitizedText) {
+      return events;
+    }
+
+    // In passthrough mode, don't parse MCP tool calls - just emit text as-is.
+    if (this.mcpPassthrough) {
+      events.push(...this._emitTextDelta(sanitizedText));
+      return events;
+    }
+
+    if (process.env.HOPGPT_DEBUG === 'true') {
+      const hasToolCallTag =
+        sanitizedText.includes('<tool_call') ||
+        includesAny(sanitizedText, FUNCTION_CALLS_TAGS) ||
+        sanitizedText.includes(MCP_TOOL_CALL_START_TAG) ||
+        sanitizedText.includes(TOOL_USE_START_TAG) ||
+        includesAny(sanitizedText, INVOKE_TAGS);
+      if (hasToolCallTag) {
+        log.debug('Text contains tool call XML', { preview: sanitizedText.slice(0, 200) });
+      }
+    }
+
+    const combined = `${this.mcpToolCallBuffer}${sanitizedText}`;
+    const { segments, remainder } = splitStreamTextForMcpToolCalls(combined);
+    this.mcpToolCallBuffer = remainder;
+
+    if (!remainder) {
+      this._toolBufferWarningEmitted = false;
+      this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
+    }
+
+    if (remainder && remainder.length >= this._nextToolBufferWarningAt) {
+      const preview = remainder.slice(0, 200);
+      log.warn('Large tool call buffer detected', {
+        size: remainder.length,
+        nextWarningAt: this._nextToolBufferWarningAt,
+        preview,
+      });
+      if (TOOL_CALL_BUFFER_WARN_STEP > 0) {
+        const steps =
+          Math.floor(
+            (remainder.length - this._nextToolBufferWarningAt) / TOOL_CALL_BUFFER_WARN_STEP,
+          ) + 1;
+        this._nextToolBufferWarningAt += steps * TOOL_CALL_BUFFER_WARN_STEP;
+      } else {
+        this._nextToolBufferWarningAt = remainder.length + 1;
+      }
+    }
+
+    if (process.env.HOPGPT_DEBUG === 'true') {
+      const toolCalls = segments.filter((s) => s.type === 'tool_call');
+      if (toolCalls.length > 0) {
+        log.debug('Parsed tool calls from text', {
+          count: toolCalls.length,
+          tools: toolCalls.map((tc) => tc.toolCall?.toolName),
+        });
+      }
+    }
+
+    let sawToolCall = false;
+    for (const segment of segments) {
+      if (segment.type === 'text') {
+        if (routeTextToThinking) {
+          if (!sawToolCall && segment.text.trim().length > 0) {
+            events.push(...this._emitThinkingDelta(segment.text));
+          }
+          continue;
+        }
+        if (suppressTextAfterToolUse && sawToolCall) {
+          continue;
+        }
+        events.push(...this._emitTextDelta(segment.text));
+        continue;
+      }
+      if (segment.type === 'tool_call') {
+        const toolBlock = this._buildToolUseFromCall(segment.toolCall);
+        if (toolBlock) {
+          events.push(...this._processToolUseBlock(toolBlock));
+          sawToolCall = true;
+        }
+      }
+    }
+
+    return events;
+  }
+
   _emitTextDelta(text) {
     if (!text) {
       return [];
@@ -2254,16 +2374,18 @@ export class HopGPTToAnthropicTransformer {
       this._lastTextChunk = null;
     }
 
-    if (this._lastTextChunk &&
-        text.length >= DUPLICATE_TEXT_CHUNK_MIN_LENGTH &&
-        text === this._lastTextChunk) {
+    if (
+      this._lastTextChunk &&
+      text.length >= DUPLICATE_TEXT_CHUNK_MIN_LENGTH &&
+      text === this._lastTextChunk
+    ) {
       return [];
     }
 
     if (this.blockStarted && this.currentBlockType !== 'text') {
       // Save tool use before switching away from tool_use block
       if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
-        this.accumulatedToolUses.push({...this.currentToolUse});
+        this.accumulatedToolUses.push({ ...this.currentToolUse });
         this.currentToolUse = null;
       }
       events.push(this._createBlockStop());
@@ -2286,9 +2408,9 @@ export class HopGPTToAnthropicTransformer {
         index: this.currentBlockIndex,
         delta: {
           type: 'text_delta',
-          text
-        }
-      }
+          text,
+        },
+      },
     });
     this._lastTextChunk = text;
 
@@ -2297,9 +2419,7 @@ export class HopGPTToAnthropicTransformer {
 
   _emitEmptyTextDelta() {
     const startEvent = this._createBlockStart('text');
-    const events = Array.isArray(startEvent)
-      ? [...startEvent]
-      : (startEvent ? [startEvent] : []);
+    const events = Array.isArray(startEvent) ? [...startEvent] : startEvent ? [startEvent] : [];
 
     events.push({
       event: 'content_block_delta',
@@ -2308,9 +2428,9 @@ export class HopGPTToAnthropicTransformer {
         index: this.currentBlockIndex,
         delta: {
           type: 'text_delta',
-          text: ''
-        }
-      }
+          text: '',
+        },
+      },
     });
     events.push(this._createBlockStop());
     return events;
@@ -2324,23 +2444,29 @@ export class HopGPTToAnthropicTransformer {
       this._stopRequested = true;
     }
 
-    const toolId = block.id || (this.currentToolUse?.id);
-    const toolName = block.name || (this.currentToolUse?.name);
+    const toolId = block.id || this.currentToolUse?.id;
+    const toolName = block.name || this.currentToolUse?.name;
 
-    if (this.blockStarted && (this.currentBlockType !== 'tool_use' ||
-        (this.currentToolUse && this.currentToolUse.id !== toolId))) {
+    if (
+      this.blockStarted &&
+      (this.currentBlockType !== 'tool_use' ||
+        (this.currentToolUse && this.currentToolUse.id !== toolId))
+    ) {
       if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
-        this.accumulatedToolUses.push({...this.currentToolUse});
+        this.accumulatedToolUses.push({ ...this.currentToolUse });
       }
       events.push(this._createBlockStop());
     }
 
-    if (!this.blockStarted || this.currentBlockType !== 'tool_use' ||
-        (this.currentToolUse && this.currentToolUse.id !== toolId)) {
+    if (
+      !this.blockStarted ||
+      this.currentBlockType !== 'tool_use' ||
+      (this.currentToolUse && this.currentToolUse.id !== toolId)
+    ) {
       this.currentToolUse = {
         id: toolId || generateToolUseId(),
         name: toolName || '',
-        inputJson: ''
+        inputJson: '',
       };
       const startEvent = this._createBlockStart('tool_use', this.currentToolUse);
       if (Array.isArray(startEvent)) {
@@ -2368,9 +2494,10 @@ export class HopGPTToAnthropicTransformer {
             }
           }
         }
-        const normalizedInput = parsedInput && typeof parsedInput === 'object'
-          ? normalizeToolInput(toolName, parsedInput)
-          : { _raw: block.input };
+        const normalizedInput =
+          parsedInput && typeof parsedInput === 'object'
+            ? normalizeToolInput(toolName, parsedInput)
+            : { _raw: block.input };
         inputDelta = JSON.stringify(normalizedInput);
         this.currentToolUse.inputJson = inputDelta;
       } else if (typeof block.input === 'object') {
@@ -2387,9 +2514,9 @@ export class HopGPTToAnthropicTransformer {
             index: this.currentBlockIndex,
             delta: {
               type: 'input_json_delta',
-              partial_json: inputDelta
-            }
-          }
+              partial_json: inputDelta,
+            },
+          },
         });
       }
     }
@@ -2403,9 +2530,9 @@ export class HopGPTToAnthropicTransformer {
           index: this.currentBlockIndex,
           delta: {
             type: 'input_json_delta',
-            partial_json: block.input_json
-          }
-        }
+            partial_json: block.input_json,
+          },
+        },
       });
     }
 
@@ -2415,8 +2542,8 @@ export class HopGPTToAnthropicTransformer {
   _getGeneratedText() {
     if (this.contentBlocks.length > 0) {
       return this.contentBlocks
-        .filter(block => block.type === 'text' && typeof block.text === 'string')
-        .map(block => block.text)
+        .filter((block) => block.type === 'text' && typeof block.text === 'string')
+        .map((block) => block.text)
         .join('');
     }
 
@@ -2450,9 +2577,10 @@ export class HopGPTToAnthropicTransformer {
     const mappedReason = mapStopReason(this.hopGPTStopReason);
     if (mappedReason) {
       if (mappedReason === 'stop_sequence') {
-        const sequence = typeof this.hopGPTStopSequence === 'string' && this.hopGPTStopSequence.length > 0
-          ? this.hopGPTStopSequence
-          : this._detectStopSequence();
+        const sequence =
+          typeof this.hopGPTStopSequence === 'string' && this.hopGPTStopSequence.length > 0
+            ? this.hopGPTStopSequence
+            : this._detectStopSequence();
         return { stopReason: 'stop_sequence', stopSequence: sequence || null };
       }
       return { stopReason: mappedReason, stopSequence: null };
@@ -2496,11 +2624,11 @@ export class HopGPTToAnthropicTransformer {
             stop_sequence: null,
             usage: {
               input_tokens: 0,
-              output_tokens: 0
-            }
-          }
-        }
-      }
+              output_tokens: 0,
+            },
+          },
+        },
+      },
     ];
   }
 
@@ -2527,9 +2655,9 @@ export class HopGPTToAnthropicTransformer {
           index: this.currentBlockIndex,
           content_block: {
             type: 'thinking',
-            thinking: ''
-          }
-        }
+            thinking: '',
+          },
+        },
       });
     } else if (blockType === 'tool_use') {
       events.push({
@@ -2540,9 +2668,9 @@ export class HopGPTToAnthropicTransformer {
           content_block: {
             type: 'tool_use',
             id: toolUseInfo?.id || generateToolUseId(),
-            name: toolUseInfo?.name || ''
-          }
-        }
+            name: toolUseInfo?.name || '',
+          },
+        },
       });
     } else {
       events.push({
@@ -2552,9 +2680,9 @@ export class HopGPTToAnthropicTransformer {
           index: this.currentBlockIndex,
           content_block: {
             type: 'text',
-            text: ''
-          }
-        }
+            text: '',
+          },
+        },
       });
     }
 
@@ -2569,8 +2697,8 @@ export class HopGPTToAnthropicTransformer {
       event: 'content_block_stop',
       data: {
         type: 'content_block_stop',
-        index: this.currentBlockIndex
-      }
+        index: this.currentBlockIndex,
+      },
     };
     this.blockStarted = false;
     return event;
@@ -2604,9 +2732,9 @@ export class HopGPTToAnthropicTransformer {
         index: this.currentBlockIndex,
         delta: {
           type: 'text_delta',
-          text
-        }
-      }
+          text,
+        },
+      },
     });
 
     return events;
@@ -2667,7 +2795,7 @@ export class HopGPTToAnthropicTransformer {
 
     // Save current tool use if still in progress
     if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
-      this.accumulatedToolUses.push({...this.currentToolUse});
+      this.accumulatedToolUses.push({ ...this.currentToolUse });
     }
 
     // Close any open content block
@@ -2692,20 +2820,20 @@ export class HopGPTToAnthropicTransformer {
         type: 'message_delta',
         delta: {
           stop_reason: stopReason,
-          stop_sequence: stopSequence
+          stop_sequence: stopSequence,
         },
         usage: {
-          output_tokens: this.outputTokens
-        }
-      }
+          output_tokens: this.outputTokens,
+        },
+      },
     });
 
     // Add message_stop
     events.push({
       event: 'message_stop',
       data: {
-        type: 'message_stop'
-      }
+        type: 'message_stop',
+      },
     });
 
     return events;
@@ -2751,14 +2879,7 @@ export class HopGPTToAnthropicTransformer {
   }
 
   _detectGenericMcpToolName() {
-    const candidates = [
-      'mcp',
-      'mcp_tool',
-      'mcp_tool_call',
-      'mcp_tool_use',
-      'mcp_call',
-      'mcp.call'
-    ];
+    const candidates = ['mcp', 'mcp_tool', 'mcp_tool_call', 'mcp_tool_use', 'mcp_call', 'mcp.call'];
     for (const candidate of candidates) {
       const match = this._lookupToolName(candidate);
       if (match) {
@@ -2781,7 +2902,7 @@ export class HopGPTToAnthropicTransformer {
       `${serverName}:${toolName}`,
       `mcp__${serverName}__${toolName}`,
       `mcp_${serverName}_${toolName}`,
-      `mcp-${serverName}-${toolName}`
+      `mcp-${serverName}-${toolName}`,
     ];
 
     for (const candidate of candidates) {
@@ -2829,7 +2950,7 @@ export class HopGPTToAnthropicTransformer {
         resolvedInput = {
           server_name: toolCall.serverName,
           tool_name: toolCall.toolName,
-          arguments: resolvedInput ?? {}
+          arguments: resolvedInput ?? {},
         };
       }
     } else if (resolvedName) {
@@ -2840,7 +2961,7 @@ export class HopGPTToAnthropicTransformer {
         const normalizedCandidate = normalizeToolNameToken(resolvedName);
         if (normalizedCandidate) {
           const normalizedMatch = this.availableToolNamesNormalized.find(
-            (entry) => entry.normalized === normalizedCandidate
+            (entry) => entry.normalized === normalizedCandidate,
           );
           if (normalizedMatch) {
             resolvedName = normalizedMatch.name;
@@ -2852,7 +2973,7 @@ export class HopGPTToAnthropicTransformer {
     return {
       name: resolvedName,
       input: resolvedInput,
-      toolUseId: toolCall.toolUseId || null
+      toolUseId: toolCall.toolUseId || null,
     };
   }
 
@@ -2865,7 +2986,7 @@ export class HopGPTToAnthropicTransformer {
       type: 'tool_use',
       id: resolved.toolUseId || generateToolUseId(),
       name: resolved.name,
-      input: normalizeToolInput(resolved.name, resolved.input)
+      input: normalizeToolInput(resolved.name, resolved.input),
     };
   }
 
@@ -2885,7 +3006,7 @@ export class HopGPTToAnthropicTransformer {
       if (this.accumulatedThinking) {
         const thinkingBlock = {
           type: 'thinking',
-          thinking: this.accumulatedThinking
+          thinking: this.accumulatedThinking,
         };
         if (this.thinkingSignature) {
           thinkingBlock.signature = this.thinkingSignature;
@@ -2896,7 +3017,7 @@ export class HopGPTToAnthropicTransformer {
       if (this.accumulatedText) {
         content.push({
           type: 'text',
-          text: this.accumulatedText
+          text: this.accumulatedText,
         });
       }
 
@@ -2915,7 +3036,7 @@ export class HopGPTToAnthropicTransformer {
           type: 'tool_use',
           id: toolUse.id,
           name: toolUse.name,
-          input
+          input,
         });
       }
 
@@ -2923,7 +3044,7 @@ export class HopGPTToAnthropicTransformer {
       if (content.length === 0) {
         content.push({
           type: 'text',
-          text: ''
+          text: '',
         });
       }
     }
@@ -2940,8 +3061,8 @@ export class HopGPTToAnthropicTransformer {
       stop_sequence: stopSequence,
       usage: {
         input_tokens: this.inputTokens,
-        output_tokens: this.outputTokens
-      }
+        output_tokens: this.outputTokens,
+      },
     };
   }
 
@@ -2953,7 +3074,7 @@ export class HopGPTToAnthropicTransformer {
     return {
       conversationId: this.conversationId,
       lastAssistantMessageId: this.responseMessageId,
-      systemPrompt: this.systemPrompt
+      systemPrompt: this.systemPrompt,
     };
   }
 
