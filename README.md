@@ -38,7 +38,7 @@ Restart Claude Code. HoProxy ignores the auth token, but Claude Code requires a 
 
 ### OpenCode
 
-Point OpenCode at `http://localhost:3001` as an Anthropic-compatible provider. HoProxy handles OpenCode's tool-use flow out of the box — it injects tool definitions into the prompt, parses the model's XML tool calls, and returns standard Anthropic `tool_use` blocks. If your client parses XML tool calls directly from the text stream instead, see [Appendix B: MCP passthrough mode](#appendix-b-mcp-passthrough-mode).
+Point OpenCode at `http://localhost:3001` as an Anthropic-compatible provider. HoProxy handles OpenCode's tool-use flow out of the box — it injects tool definitions into the prompt, parses the model's XML tool calls, and returns standard Anthropic `tool_use` blocks. Tool streams are closed as soon as a complete tool-call batch is emitted so OpenCode can run tools immediately instead of waiting for HopGPT to finish extra narration. If your client parses XML tool calls directly from the text stream instead, see [Appendix B: MCP passthrough mode](#appendix-b-mcp-passthrough-mode).
 
 ### Anthropic SDK
 
@@ -125,6 +125,7 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | `HOPGPT_COOKIE_TOKEN_PROVIDER`              | `librechat` | Token provider; HopGPT production uses `openid`.                                                                     |
 | `HOPGPT_USER_AGENT`                         | —           | Browser `User-Agent`. Helps satisfy Cloudflare.                                                                      |
 | `HOPGPT_STREAMING_TRANSPORT`                | `fetch`     | `fetch` or `tls`. Switch to `tls` if Cloudflare blocks streaming on native fetch.                                    |
+| `HOPGPT_STREAM_IDLE_PING_DELAY_MS`          | `250`       | Delay before sending an early Anthropic `message_start` while HopGPT is still opening the upstream stream. Use `0` for immediate liveness. |
 | `CONVERSATION_TTL_MS`                       | `21600000`  | In-memory conversation TTL (ms); default 6h.                                                                         |
 | `SIGNATURE_CACHE_TTL_MS`                    | `3600000`   | Tool-signature cache TTL (ms); default 1h.                                                                           |
 | `HOPGPT_TOOL_CALL_BUFFER_SIZE`              | `1000000`   | Max buffer for streaming tool-call detection (bytes).                                                                |
@@ -170,7 +171,7 @@ State expires after `CONVERSATION_TTL_MS` (6h default).
 | Model warning / not found                       | Use a canonical model from the table above, or hit `GET /v1/models`.                                                   |
 | Claude Code still calls `api.anthropic.com`     | `ANTHROPIC_BASE_URL` isn't being read. Double-check `~/.claude/settings.json` and restart Claude Code.                 |
 | Tool-call XML rendered as text                  | Passthrough mode is on. See [Appendix B](#appendix-b-mcp-passthrough-mode) — the default (off) converts XML to `tool_use`. |
-| Agent stops after tool results or `continue`    | Upgrade to a build with continuation fixes: forced-closed streams no longer store HopGPT's user-message id as the assistant parent, tool-result turns replay the matching `tool_use`, and stateless clients avoid shared derived sessions. |
+| Agent stops after tool results or `continue`    | Upgrade to a build with continuation fixes: forced-closed streams no longer store HopGPT's user-message id as the assistant parent, tool-result turns replay the matching `tool_use`, stateless clients avoid shared derived sessions, and OpenCode tool streams end immediately after each tool batch. |
 
 Need deeper insight? `HOPGPT_DEBUG=true npm start` logs incoming HopGPT events, detected tool-call XML, and parsed tool calls. `GET /token-debug` compares in-memory auth state against `.env`.
 
@@ -178,7 +179,7 @@ Need deeper insight? `HOPGPT_DEBUG=true npm start` logs incoming HopGPT events, 
 
 HopGPT uses a two-phase chat protocol. HoProxy POSTs `/api/agents/chat/AnthropicClaude` to get a `{streamId, conversationId, status:"started"}` ack, then GETs `/api/agents/chat/stream/{streamId}` for the SSE event stream. Retry policy splits by phase: POST 401/403/429 fully re-runs the sequence; GET 401/403/429 retries the subscription only (reusing the same `streamId`) to avoid duplicating the user's persisted message on HopGPT's server. No user-visible configuration changes.
 
-The outgoing Anthropic stream keeps strict block shape for SDK clients: `tool_use` block starts include `input: {}` before `input_json_delta` chunks, and thinking blocks emit `signature_delta` before `content_block_stop` when HopGPT provides a signature.
+The outgoing Anthropic stream keeps strict block shape for SDK clients: `tool_use` block starts include `input: {}` before `input_json_delta` chunks, thinking blocks emit `signature_delta` before `content_block_stop` when HopGPT provides a signature, and tool-use responses end with `stop_reason:"tool_use"` as soon as a complete tool-call batch has been transformed.
 
 ## Testing
 

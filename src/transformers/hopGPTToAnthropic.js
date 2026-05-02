@@ -1749,12 +1749,9 @@ export class HopGPTToAnthropicTransformer {
   transformEvent(event) {
     try {
       const data = JSON.parse(event.data);
-      const suppressOutput = this._suppressOutput;
-      const events = this._transformData(data);
-      if (suppressOutput) {
-        return null;
-      }
-      return events;
+      const wasSuppressingOutput = this._suppressOutput;
+      const result = this._transformData(data);
+      return wasSuppressingOutput ? null : result;
     } catch (error) {
       log.error('Failed to parse SSE event', { error: error.message });
       return null;
@@ -1801,7 +1798,17 @@ export class HopGPTToAnthropicTransformer {
           cacheThinkingSignature(this.thinkingSignature, 'claude');
         }
 
-        if (this.stopOnToolUse && this._stopRequested && !this._hasEmittedMessageStop) {
+        const emittedToolUse = events.some(
+          (event) =>
+            event.event === 'content_block_start' && event.data?.content_block?.type === 'tool_use',
+        );
+
+        if (
+          this.stopOnToolUse &&
+          this._stopRequested &&
+          !emittedToolUse &&
+          !this._hasEmittedMessageStop
+        ) {
           this.mcpToolCallBuffer = '';
           this._toolBufferWarningEmitted = false;
           this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
@@ -2025,6 +2032,14 @@ export class HopGPTToAnthropicTransformer {
       const thinkingText = block.thinking || block.text || '';
       const signature = block.signature || block.thoughtSignature || null;
 
+      if (this.stopOnToolUse && this._stopRequested) {
+        if (signature) {
+          this.thinkingSignature = signature;
+          cacheThinkingSignature(this.thinkingSignature, 'claude');
+        }
+        return events.length > 0 ? events : null;
+      }
+
       if (!thinkingText) {
         return events.length > 0 ? events : null;
       }
@@ -2071,7 +2086,7 @@ export class HopGPTToAnthropicTransformer {
    */
   _extractFinalContent(content) {
     let stopAfterTool = false;
-    for (const block of content) {
+    for (const [index, block] of content.entries()) {
       if (stopAfterTool) {
         break;
       }
@@ -2115,12 +2130,13 @@ export class HopGPTToAnthropicTransformer {
         const segments = splitMcpToolCalls(sanitizedText, true);
         const suppressToolPreamble =
           this.suppressThinking && segments.some((segment) => segment.type === 'tool_call');
+        const suppressToolText =
+          suppressToolPreamble ||
+          (this.stopOnToolUse && segments.some((segment) => segment.type === 'tool_call'));
+        const hasToolCall = segments.some((segment) => segment.type === 'tool_call');
         for (const segment of segments) {
-          if (stopAfterTool) {
-            break;
-          }
           if (segment.type === 'text') {
-            if (suppressToolPreamble) {
+            if (suppressToolText) {
               continue;
             }
             if (!segment.text) continue;
@@ -2151,10 +2167,10 @@ export class HopGPTToAnthropicTransformer {
               name: toolBlock.name,
               input: toolBlock.input,
             });
-            if (this.stopOnToolUse) {
-              stopAfterTool = true;
-            }
           }
+        }
+        if (this.stopOnToolUse && hasToolCall) {
+          stopAfterTool = true;
         }
       } else if (block.type === 'tool_use') {
         this.hasToolUse = true;
@@ -2176,7 +2192,8 @@ export class HopGPTToAnthropicTransformer {
           name: block.name || '',
           input: input || {},
         });
-        if (this.stopOnToolUse) {
+        const nextBlock = content[index + 1];
+        if (this.stopOnToolUse && nextBlock?.type !== 'tool_use') {
           stopAfterTool = true;
         }
       }
@@ -2191,7 +2208,7 @@ export class HopGPTToAnthropicTransformer {
     const events = [];
     let stopAfterTool = false;
 
-    for (const block of content) {
+    for (const [index, block] of content.entries()) {
       if (stopAfterTool) {
         break;
       }
@@ -2222,12 +2239,13 @@ export class HopGPTToAnthropicTransformer {
         const segments = splitMcpToolCalls(sanitizedText, true);
         const suppressToolPreamble =
           this.suppressThinking && segments.some((segment) => segment.type === 'tool_call');
+        const suppressToolText =
+          suppressToolPreamble ||
+          (this.stopOnToolUse && segments.some((segment) => segment.type === 'tool_call'));
+        const hasToolCall = segments.some((segment) => segment.type === 'tool_call');
         for (const segment of segments) {
-          if (stopAfterTool) {
-            break;
-          }
           if (segment.type === 'text') {
-            if (suppressToolPreamble) {
+            if (suppressToolText) {
               continue;
             }
             if (segment.text) {
@@ -2240,10 +2258,10 @@ export class HopGPTToAnthropicTransformer {
             if (toolBlock) {
               events.push(...this._processToolUseBlock(toolBlock));
             }
-            if (this.stopOnToolUse) {
-              stopAfterTool = true;
-            }
           }
+        }
+        if (this.stopOnToolUse && hasToolCall) {
+          stopAfterTool = true;
         }
         continue;
       }
@@ -2253,7 +2271,8 @@ export class HopGPTToAnthropicTransformer {
         if (blockEvents) {
           events.push(...blockEvents);
         }
-        if (this.stopOnToolUse) {
+        const nextBlock = content[index + 1];
+        if (this.stopOnToolUse && nextBlock?.type !== 'tool_use') {
           stopAfterTool = true;
         }
       }
@@ -2348,6 +2367,7 @@ export class HopGPTToAnthropicTransformer {
     const combined = `${this.mcpToolCallBuffer}${sanitizedText}`;
     const { segments, remainder } = splitStreamTextForMcpToolCalls(combined);
     this.mcpToolCallBuffer = remainder;
+    const hasParsedToolCall = segments.some((segment) => segment.type === 'tool_call');
 
     if (!remainder) {
       this._toolBufferWarningEmitted = false;
@@ -2385,6 +2405,12 @@ export class HopGPTToAnthropicTransformer {
     let sawToolCall = false;
     for (const segment of segments) {
       if (segment.type === 'text') {
+        if (this.stopOnToolUse && this._stopRequested) {
+          continue;
+        }
+        if (this.stopOnToolUse && hasParsedToolCall) {
+          continue;
+        }
         if (routeTextToThinking) {
           if (!sawToolCall && segment.text.trim().length > 0) {
             events.push(...this._emitThinkingDelta(segment.text));
@@ -3106,7 +3132,15 @@ export class HopGPTToAnthropicTransformer {
       }
 
       // Add accumulated tool uses
-      for (const toolUse of this.accumulatedToolUses) {
+      const toolUses = [...this.accumulatedToolUses];
+      if (
+        this.currentToolUse &&
+        !toolUses.some((toolUse) => toolUse.id === this.currentToolUse.id)
+      ) {
+        toolUses.push(this.currentToolUse);
+      }
+
+      for (const toolUse of toolUses) {
         let input = {};
         if (toolUse.inputJson) {
           try {

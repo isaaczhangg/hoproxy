@@ -14,7 +14,7 @@ export async function parseSSEStream(response, onEvent) {
     if (event.type === 'event') {
       onEvent({
         event: event.event || 'message',
-        data: event.data
+        data: event.data,
       });
     }
   });
@@ -45,11 +45,16 @@ export async function parseSSEStream(response, onEvent) {
  */
 export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, options = {}) {
   const { autoEndOnMessageStop = false } = options;
+  let stoppedOnMessageStop = false;
   const parser = createParser((event) => {
+    if (stoppedOnMessageStop) {
+      return;
+    }
+
     if (event.type === 'event') {
       const parsedEvent = {
         event: event.event || 'message',
-        data: event.data
+        data: event.data,
       };
 
       const transformedEvents = transformEvent(parsedEvent);
@@ -66,7 +71,7 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
           if (evt.event === 'message_start') {
             log.debug('Streaming message_start', {
               model: evt.data?.message?.model,
-              messageId: evt.data?.message?.id
+              messageId: evt.data?.message?.id,
             });
           }
 
@@ -75,8 +80,9 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
           if (typeof res.flush === 'function') {
             res.flush();
           }
-          if (autoEndOnMessageStop && evt.event === 'message_stop' && !res.writableEnded && !res.destroyed) {
-            res.end();
+          if (autoEndOnMessageStop && evt.event === 'message_stop') {
+            stoppedOnMessageStop = true;
+            return;
           }
         }
       }
@@ -99,10 +105,16 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
 
       const chunk = decoder.decode(value, { stream: true });
       parser.feed(chunk);
+      if (stoppedOnMessageStop) {
+        await reader.cancel();
+        break;
+      }
     }
   } finally {
     reader.releaseLock();
   }
+
+  return { stoppedOnMessageStop };
 }
 
 /**

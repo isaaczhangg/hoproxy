@@ -1095,10 +1095,18 @@ describe('hopGPTToAnthropic transformer', () => {
       event: 'on_message_delta',
       data: {
         delta: {
-          content: [{ type: 'text', text: functionCalls }],
+          content: [{ type: 'text', text: `Let me inspect this first.\n${functionCalls}\nDone.` }],
         },
       },
     });
+
+    const textDeltas = events
+      .filter(
+        (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta',
+      )
+      .map((evt) => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).toBe('');
 
     const toolStarts = events.filter(
       (evt) => evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use',
@@ -1108,7 +1116,7 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(toolStarts[1].data.content_block.name).toBe('Read');
 
     const messageStop = events.find((evt) => evt.event === 'message_stop');
-    expect(messageStop).toBeTruthy();
+    expect(messageStop).toBeUndefined();
 
     const response = transformer.buildNonStreamingResponse();
     const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
@@ -1116,6 +1124,106 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(toolUseBlocks[0].input).toEqual({ file_path: 'README.md' });
     expect(toolUseBlocks[1].input).toEqual({ file_path: 'package.json' });
     expect(response.stop_reason).toBe('tool_use');
+  });
+
+  it('keeps late final-event state after output is suppressed', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
+      thinkingEnabled: false,
+      stopOnToolUse: true,
+    });
+
+    const toolCall =
+      '<tool_call>{"name":"Read","parameters":{"file_path":"README.md"}}</tool_call>';
+
+    transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({ created: true, message: { id: 'msg-create' } }),
+    });
+    const toolEvents = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: toolCall }],
+          },
+        },
+      }),
+    });
+    expect(toolEvents?.some((evt) => evt.event === 'message_stop')).toBe(false);
+
+    const lateFinalResult = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        final: true,
+        responseMessage: {
+          messageId: 'msg-final',
+          promptTokens: 12,
+          tokenCount: 7,
+          stopReason: 'stop',
+          content: [{ type: 'text', text: toolCall }],
+        },
+      }),
+    });
+
+    expect(lateFinalResult?.some((evt) => evt.event === 'message_stop')).toBe(true);
+    expect(transformer.buildNonStreamingResponse().usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 7,
+    });
+  });
+
+  it('emits adjacent native tool_use blocks from final content before stopping', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
+      thinkingEnabled: false,
+      stopOnToolUse: true,
+    });
+
+    const result = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        final: true,
+        responseMessage: {
+          messageId: 'msg-final',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_read',
+              name: 'Read',
+              input: { file_path: 'README.md' },
+            },
+            {
+              type: 'tool_use',
+              id: 'toolu_package',
+              name: 'Read',
+              input: { file_path: 'package.json' },
+            },
+            { type: 'text', text: 'This should not be emitted after tool use.' },
+          ],
+        },
+      }),
+    });
+    const events = Array.isArray(result) ? result : [];
+
+    const toolStarts = events.filter(
+      (evt) => evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use',
+    );
+    expect(toolStarts).toHaveLength(2);
+    expect(toolStarts[0].data.content_block.id).toBe('toolu_read');
+    expect(toolStarts[1].data.content_block.id).toBe('toolu_package');
+    expect(events).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            delta: expect.objectContaining({ text: expect.stringContaining('not be emitted') }),
+          }),
+        }),
+      ]),
+    );
+
+    const response = transformer.buildNonStreamingResponse();
+    const toolUseBlocks = response.content.filter((block) => block.type === 'tool_use');
+    expect(toolUseBlocks).toHaveLength(2);
   });
 
   it('extracts standalone invoke blocks from text and emits tool_use', () => {

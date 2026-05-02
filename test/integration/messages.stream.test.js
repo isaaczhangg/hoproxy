@@ -194,6 +194,136 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(res.text).toContain('"stop_reason":"tool_use"');
   });
 
+  it('ends the client stream as soon as a tool batch is complete', async () => {
+    const functionCalls = `<function_calls>
+<invoke name="Read">
+<parameter name="file_path">README.md</parameter>
+</invoke>
+</function_calls>`;
+    const harSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"m1","conversationId":"c1"}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [
+              {
+                type: 'text',
+                text: `Let me inspect first.\n${functionCalls}\nI will keep talking after the tool.`,
+              },
+            ],
+          },
+        },
+      })}\n\n` +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: 'This late text should not reach OpenCode.' }],
+          },
+        },
+      })}\n\n` +
+      'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r1","conversationId":"c1","content":[{"type":"text","text":"final text should not leak"}]}}\n\n';
+
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: async () => makeSSEResponse(harSSE),
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: 'user', content: 'inspect the repo' }],
+        tools: [
+          {
+            name: 'Read',
+            input_schema: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"type":"tool_use"');
+    expect(res.text).toContain('"name":"Read"');
+    expect(res.text).toContain('\\"file_path\\":\\"README.md\\"');
+    expect(res.text).toContain('"stop_reason":"tool_use"');
+    expect(res.text).not.toContain('Let me inspect first');
+    expect(res.text).not.toContain('This late text should not reach OpenCode');
+    expect(res.text).not.toContain('final text should not leak');
+  });
+
+  it('keeps reading split streaming tool batches until the next non-tool delta', async () => {
+    const firstToolCall = `<tool_call>{"name":"Read","parameters":{"file_path":"README.md"}}</tool_call>`;
+    const secondToolCall = `<tool_call>{"name":"Read","parameters":{"file_path":"package.json"}}</tool_call>`;
+    const harSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"m1","conversationId":"c1"}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: firstToolCall }],
+          },
+        },
+      })}\n\n` +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: secondToolCall }],
+          },
+        },
+      })}\n\n` +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: 'This post-tool prose should not reach OpenCode.' }],
+          },
+        },
+      })}\n\n` +
+      'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r1","conversationId":"c1","content":[{"type":"text","text":"final text should not leak"}]}}\n\n';
+
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: async () => makeSSEResponse(harSSE),
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: 'user', content: 'inspect the repo' }],
+        tools: [
+          {
+            name: 'Read',
+            input_schema: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('\\"file_path\\":\\"README.md\\"');
+    expect(res.text).toContain('\\"file_path\\":\\"package.json\\"');
+    expect(res.text).toContain('"stop_reason":"tool_use"');
+    expect(res.text).not.toContain('post-tool prose');
+    expect(res.text).not.toContain('final text should not leak');
+  });
+
   it('does not inject continue prompts or stream thinking on tool-result continuations', async () => {
     const functionCalls = `<function_calls>
 <invoke name="Read">

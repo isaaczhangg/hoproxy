@@ -28,7 +28,7 @@ import { parseSSEStream, pipeSSEStream } from '../utils/sseParser.js';
 
 const log = loggers.messages;
 const router = Router();
-const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 1000;
+const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 250;
 
 /**
  * POST /v1/messages/count_tokens
@@ -141,9 +141,15 @@ router.post('/messages', async (req, res) => {
     const toolNames = extractToolNames(anthropicRequest.tools);
     const hasTools = toolNames.length > 0;
     const toolChoiceConfig = getToolChoiceConfig(anthropicRequest.tool_choice);
+    const isStreaming = anthropicRequest.stream === true;
 
     // Determine if we should stop on tool use
-    const stopOnToolUse = shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig);
+    const stopOnToolUse = shouldStopOnToolUse(
+      mcpPassthrough,
+      hasTools,
+      toolChoiceConfig,
+      isStreaming,
+    );
 
     log.debug('Processing request', {
       sessionId: sessionId.slice(0, 8) + '...',
@@ -165,9 +171,6 @@ router.post('/messages', async (req, res) => {
       stopOnToolUse,
       toolNames,
     };
-
-    // Determine if streaming
-    const isStreaming = anthropicRequest.stream === true;
 
     // Echo the requested model in responses to avoid client-side model validation errors.
     const responseModel = anthropicRequest.model;
@@ -277,15 +280,20 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
   clearTimeout(idlePingTimer);
 
   try {
-    await pipeSSEStream(
+    writeSSEEvents(res, transformer.createMessageStart());
+
+    const pipeResult = await pipeSSEStream(
       hopGPTResponse,
       res,
       (event) => {
         return transformer.transformEvent(event);
       },
       abortController.signal,
-      { autoEndOnMessageStop: false },
+      { autoEndOnMessageStop: true },
     );
+    if (pipeResult?.stoppedOnMessageStop && !abortController.signal.aborted) {
+      abortController.abort();
+    }
 
     // Ensure the stream is properly terminated even if HopGPT didn't send a final event
     // This prevents clients from hanging indefinitely waiting for message_stop
@@ -346,7 +354,7 @@ function writeSSEEvents(res, events) {
   for (const event of events) {
     res.write(formatSSEEvent(event));
   }
-  if (typeof res.flush === 'function') {
+  if (events.length > 0 && typeof res.flush === 'function') {
     res.flush();
   }
 }
@@ -523,9 +531,10 @@ function extractToolNames(tools) {
  * @param {boolean} mcpPassthrough - Whether MCP passthrough is enabled
  * @param {boolean} hasTools - Whether tools are present
  * @param {object} toolChoiceConfig - Tool choice configuration
+ * @param {boolean} isStreaming - Whether the request streams events to the client
  * @returns {boolean} Whether to stop on tool use
  */
-function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
+function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig, isStreaming) {
   if (mcpPassthrough) {
     return false;
   }
@@ -538,7 +547,7 @@ function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
     return false;
   }
 
-  return toolChoiceConfig.disableParallelToolUse;
+  return isStreaming || toolChoiceConfig.disableParallelToolUse === true;
 }
 
 function mapErrorResponse({ statusCode, message, responseBody, fallbackType, retryAfterMs }) {
