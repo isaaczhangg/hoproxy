@@ -141,9 +141,15 @@ router.post('/messages', async (req, res) => {
     const toolNames = extractToolNames(anthropicRequest.tools);
     const hasTools = toolNames.length > 0;
     const toolChoiceConfig = getToolChoiceConfig(anthropicRequest.tool_choice);
+    const isStreaming = anthropicRequest.stream === true;
 
     // Determine if we should stop on tool use
-    const stopOnToolUse = shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig);
+    const stopOnToolUse = shouldStopOnToolUse(
+      mcpPassthrough,
+      hasTools,
+      toolChoiceConfig,
+      isStreaming,
+    );
 
     log.debug('Processing request', {
       sessionId: sessionId.slice(0, 8) + '...',
@@ -165,9 +171,6 @@ router.post('/messages', async (req, res) => {
       stopOnToolUse,
       toolNames,
     };
-
-    // Determine if streaming
-    const isStreaming = anthropicRequest.stream === true;
 
     // Echo the requested model in responses to avoid client-side model validation errors.
     const responseModel = anthropicRequest.model;
@@ -528,9 +531,10 @@ function extractToolNames(tools) {
  * @param {boolean} mcpPassthrough - Whether MCP passthrough is enabled
  * @param {boolean} hasTools - Whether tools are present
  * @param {object} toolChoiceConfig - Tool choice configuration
+ * @param {boolean} isStreaming - Whether the request streams events to the client
  * @returns {boolean} Whether to stop on tool use
  */
-function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
+function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig, isStreaming) {
   if (mcpPassthrough) {
     return false;
   }
@@ -543,7 +547,7 @@ function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
     return false;
   }
 
-  return true;
+  return isStreaming || toolChoiceConfig.disableParallelToolUse === true;
 }
 
 function mapErrorResponse({ statusCode, message, responseBody, fallbackType, retryAfterMs }) {

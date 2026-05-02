@@ -1748,11 +1748,10 @@ export class HopGPTToAnthropicTransformer {
    */
   transformEvent(event) {
     try {
-      if (this._suppressOutput) {
-        return null;
-      }
       const data = JSON.parse(event.data);
-      return this._transformData(data);
+      const wasSuppressingOutput = this._suppressOutput;
+      const result = this._transformData(data);
+      return wasSuppressingOutput ? null : result;
     } catch (error) {
       log.error('Failed to parse SSE event', { error: error.message });
       return null;
@@ -2116,10 +2115,8 @@ export class HopGPTToAnthropicTransformer {
         const suppressToolText =
           suppressToolPreamble ||
           (this.stopOnToolUse && segments.some((segment) => segment.type === 'tool_call'));
+        const hasToolCall = segments.some((segment) => segment.type === 'tool_call');
         for (const segment of segments) {
-          if (stopAfterTool) {
-            break;
-          }
           if (segment.type === 'text') {
             if (suppressToolText) {
               continue;
@@ -2152,10 +2149,10 @@ export class HopGPTToAnthropicTransformer {
               name: toolBlock.name,
               input: toolBlock.input,
             });
-            if (this.stopOnToolUse) {
-              stopAfterTool = true;
-            }
           }
+        }
+        if (this.stopOnToolUse && hasToolCall) {
+          stopAfterTool = true;
         }
       } else if (block.type === 'tool_use') {
         this.hasToolUse = true;
@@ -2226,10 +2223,8 @@ export class HopGPTToAnthropicTransformer {
         const suppressToolText =
           suppressToolPreamble ||
           (this.stopOnToolUse && segments.some((segment) => segment.type === 'tool_call'));
+        const hasToolCall = segments.some((segment) => segment.type === 'tool_call');
         for (const segment of segments) {
-          if (stopAfterTool) {
-            break;
-          }
           if (segment.type === 'text') {
             if (suppressToolText) {
               continue;
@@ -2244,10 +2239,10 @@ export class HopGPTToAnthropicTransformer {
             if (toolBlock) {
               events.push(...this._processToolUseBlock(toolBlock));
             }
-            if (this.stopOnToolUse) {
-              stopAfterTool = true;
-            }
           }
+        }
+        if (this.stopOnToolUse && hasToolCall) {
+          stopAfterTool = true;
         }
         continue;
       }

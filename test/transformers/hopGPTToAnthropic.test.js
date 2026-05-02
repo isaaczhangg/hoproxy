@@ -1126,6 +1126,53 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(response.stop_reason).toBe('tool_use');
   });
 
+  it('keeps late final-event state after output is suppressed', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
+      thinkingEnabled: false,
+      stopOnToolUse: true,
+    });
+
+    const toolCall =
+      '<tool_call>{"name":"Read","parameters":{"file_path":"README.md"}}</tool_call>';
+
+    transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({ created: true, message: { id: 'msg-create' } }),
+    });
+    const toolEvents = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: toolCall }],
+          },
+        },
+      }),
+    });
+    expect(toolEvents?.some((evt) => evt.event === 'message_stop')).toBe(true);
+
+    const lateFinalResult = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        final: true,
+        responseMessage: {
+          messageId: 'msg-final',
+          promptTokens: 12,
+          tokenCount: 7,
+          stopReason: 'stop',
+          content: [{ type: 'text', text: toolCall }],
+        },
+      }),
+    });
+
+    expect(lateFinalResult).toBeNull();
+    expect(transformer.buildNonStreamingResponse().usage).toEqual({
+      input_tokens: 12,
+      output_tokens: 7,
+    });
+  });
+
   it('extracts standalone invoke blocks from text and emits tool_use', () => {
     const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
       thinkingEnabled: false,
