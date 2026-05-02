@@ -1,16 +1,17 @@
-import { tlsFetch } from './tlsClient.js';
 import fs from 'fs';
 import path from 'path';
-import { loggers } from '../utils/logger.js';
 import {
-  TokenRefreshError,
-  RefreshTokenExpiredError,
   CloudflareBlockedError,
-  NetworkError
+  NetworkError,
+  RefreshTokenExpiredError,
+  TokenRefreshError,
 } from '../errors/authErrors.js';
+import { loggers } from '../utils/logger.js';
+import { tlsFetch } from './tlsClient.js';
 
 const log = loggers.hopgpt;
 const DEFAULT_PROACTIVE_REFRESH_BUFFER_SEC = 600;
+const DEFAULT_TOKEN_PROVIDER = 'openid';
 
 // In-process mutex for .env file writes
 let envWritePromise = null;
@@ -26,6 +27,14 @@ function maskToken(token) {
   return `${token.substring(0, 10)}...${token.substring(token.length - 10)}`;
 }
 
+function resolveTokenProvider(configTokenProvider, openidUserId) {
+  const configuredProvider = configTokenProvider || process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
+  if (openidUserId && (!configuredProvider || configuredProvider.toLowerCase() === 'librechat')) {
+    return DEFAULT_TOKEN_PROVIDER;
+  }
+  return configuredProvider || DEFAULT_TOKEN_PROVIDER;
+}
+
 /**
  * HopGPT API Client
  * Handles authentication and communication with the HopGPT backend
@@ -38,6 +47,7 @@ export class HopGPTClient {
     this.streamEndpointPrefix = config.streamEndpointPrefix || '/api/agents/chat/stream/';
     this.bearerToken = config.bearerToken || process.env.HOPGPT_BEARER_TOKEN;
     this.userAgent = config.userAgent || process.env.HOPGPT_USER_AGENT;
+    const openidUserId = config.openidUserId || process.env.HOPGPT_COOKIE_OPENID_USER_ID;
     this.cookies = {
       cf_clearance: config.cfClearance || process.env.HOPGPT_COOKIE_CF_CLEARANCE,
       connect_sid: config.connectSid || process.env.HOPGPT_COOKIE_CONNECT_SID,
@@ -45,19 +55,21 @@ export class HopGPTClient {
       // In HopGPT's OIDC config the refresh credential is the `openid_user_id`
       // cookie (it's a JWT despite the name). Missing it → /api/auth/refresh
       // returns "Refresh token not provided".
-      openid_user_id: config.openidUserId || process.env.HOPGPT_COOKIE_OPENID_USER_ID,
-      token_provider: config.tokenProvider || process.env.HOPGPT_COOKIE_TOKEN_PROVIDER || 'librechat'
+      openid_user_id: openidUserId,
+      token_provider: resolveTokenProvider(config.tokenProvider, openidUserId),
     };
     this.autoRefresh = config.autoRefresh !== false;
-    this.streamingTransport = (config.streamingTransport ||
+    this.streamingTransport = (
+      config.streamingTransport ||
       process.env.HOPGPT_STREAMING_TRANSPORT ||
-      'fetch').toLowerCase();
+      'fetch'
+    ).toLowerCase();
     this.refreshPromise = null;
     this.proactiveRefreshBufferSec = parsePositiveInteger(
       config.proactiveRefreshBufferSec ?? process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS,
-      DEFAULT_PROACTIVE_REFRESH_BUFFER_SEC
+      DEFAULT_PROACTIVE_REFRESH_BUFFER_SEC,
     );
-    
+
     // Auto-persist credentials to .env after refresh. Disable by default under
     // Vitest so mocked refreshes cannot overwrite a developer's real .env.
     this.autoPersist = config.autoPersist ?? process.env.VITEST !== 'true';
@@ -68,7 +80,7 @@ export class HopGPTClient {
       maxRetries: config.rateLimitMaxRetries ?? 3,
       baseDelayMs: config.rateLimitBaseDelayMs ?? 1000,
       maxDelayMs: config.rateLimitMaxDelayMs ?? 30000,
-      maxWaitTimeMs: config.rateLimitMaxWaitTimeMs ?? 10000  // Wait for short limits (≤10 sec)
+      maxWaitTimeMs: config.rateLimitMaxWaitTimeMs ?? 10000, // Wait for short limits (≤10 sec)
     };
   }
 
@@ -121,7 +133,7 @@ export class HopGPTClient {
     }
 
     // Otherwise, use exponential backoff: baseDelay * 2^attempt with jitter
-    const exponentialDelay = this.rateLimitConfig.baseDelayMs * Math.pow(2, attempt);
+    const exponentialDelay = this.rateLimitConfig.baseDelayMs * 2 ** attempt;
     const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
     const delay = Math.min(exponentialDelay + jitter, this.rateLimitConfig.maxDelayMs);
 
@@ -133,7 +145,7 @@ export class HopGPTClient {
    * @param {number} ms - Duration in milliseconds
    */
   async _sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -153,39 +165,45 @@ export class HopGPTClient {
    */
   buildBrowserHeaders(browserType) {
     // Detect browser type from User-Agent if available
-    const detectedBrowser = this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
+    const detectedBrowser = this.userAgent?.toLowerCase().includes('firefox')
+      ? 'firefox'
+      : 'chrome';
     const browser = browserType || detectedBrowser;
 
     if (browser === 'firefox') {
       // Firefox-specific headers (matching HAR capture exactly)
       const headers = {
-        'User-Agent': this.userAgent || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0',
+        'User-Agent':
+          this.userAgent ||
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0',
         'Accept-Language': 'en-US,en;q=0.5',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Sec-Fetch-Dest': 'empty',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'same-origin',
-        'Connection': 'keep-alive',
-        'Priority': 'u=0',
-        'TE': 'trailers'
+        Connection: 'keep-alive',
+        Priority: 'u=0',
+        TE: 'trailers',
       };
       return headers;
     } else {
       // Chrome-specific headers
       const headers = {
-        'User-Agent': this.userAgent || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        'User-Agent':
+          this.userAgent ||
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
+        Pragma: 'no-cache',
         'Sec-Ch-Ua': '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
         'Sec-Ch-Ua-Mobile': '?0',
         'Sec-Ch-Ua-Platform': '"macOS"',
         'Sec-Fetch-Dest': 'empty',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'same-origin',
-        'Connection': 'keep-alive',
-        'Priority': 'u=4, i'
+        Connection: 'keep-alive',
+        Priority: 'u=4, i',
       };
       return headers;
     }
@@ -290,7 +308,7 @@ export class HopGPTClient {
     log.debug('Persisting credentials to .env', {
       sessionMasked: maskToken(sessionToSave),
       openidIdMasked: maskToken(openidIdToSave),
-      bearerTokenMasked: maskToken(bearerTokenToSave)
+      bearerTokenMasked: maskToken(bearerTokenToSave),
     });
 
     const writeOperation = (async () => {
@@ -305,7 +323,8 @@ export class HopGPTClient {
           'HOPGPT_BEARER_TOKEN',
           'HOPGPT_COOKIE_CONNECT_SID',
           'HOPGPT_COOKIE_OPENID_USER_ID',
-          'HOPGPT_COOKIE_REFRESH_TOKEN'
+          'HOPGPT_COOKIE_TOKEN_PROVIDER',
+          'HOPGPT_COOKIE_REFRESH_TOKEN',
         ]);
 
         if (fs.existsSync(this.envPath)) {
@@ -314,8 +333,8 @@ export class HopGPTClient {
           for (const line of existingContent.split('\n')) {
             const trimmed = line.trim();
 
-            const isTokenVar = Array.from(tokenVars).some(v =>
-              trimmed.startsWith(`${v}=`) || trimmed.startsWith(`# ${v}=`)
+            const isTokenVar = Array.from(tokenVars).some(
+              (v) => trimmed.startsWith(`${v}=`) || trimmed.startsWith(`# ${v}=`),
             );
 
             if (!isTokenVar) {
@@ -333,6 +352,9 @@ export class HopGPTClient {
         }
         if (openidIdToSave) {
           tokenLines.push(`HOPGPT_COOKIE_OPENID_USER_ID=${openidIdToSave}`);
+        }
+        if (this.cookies.token_provider) {
+          tokenLines.push(`HOPGPT_COOKIE_TOKEN_PROVIDER=${this.cookies.token_provider}`);
         }
 
         let insertIndex = 0;
@@ -362,12 +384,12 @@ export class HopGPTClient {
 
         if (openidIdToSave && verifiedId === openidIdToSave) {
           log.info('Credentials persisted and verified in .env', {
-            openidIdMasked: maskToken(verifiedId)
+            openidIdMasked: maskToken(verifiedId),
           });
         } else if (openidIdToSave) {
           log.error('CRITICAL: .env verification failed — openid_user_id mismatch', {
             expectedMasked: maskToken(openidIdToSave),
-            actualMasked: maskToken(verifiedId)
+            actualMasked: maskToken(verifiedId),
           });
         } else {
           log.debug('Credentials persisted to .env (no openid_user_id to verify)');
@@ -474,7 +496,7 @@ export class HopGPTClient {
       openidIdPresent: !!this.cookies.openid_user_id,
       openidIdMasked: maskToken(this.cookies.openid_user_id),
       sessionPresent: !!this.cookies.connect_sid,
-      sessionMasked: maskToken(this.cookies.connect_sid)
+      sessionMasked: maskToken(this.cookies.connect_sid),
     });
 
     try {
@@ -487,9 +509,9 @@ export class HopGPTClient {
       // Use the same headers as real browser requests
       const headers = {
         ...this.buildBrowserHeaders(browserType),
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': this.baseURL,
-        'Referer': `${this.baseURL}/`
+        Accept: 'application/json, text/plain, */*',
+        Origin: this.baseURL,
+        Referer: `${this.baseURL}/`,
       };
 
       const cookieHeader = this.buildCookieHeader();
@@ -502,18 +524,25 @@ export class HopGPTClient {
         url,
         method: 'POST',
         headers,
-        browserType
+        browserType,
       });
 
       const rawBody = response.body || '';
 
       if (!response.ok) {
-        log.error('Token refresh failed', { status: response.status, statusText: response.statusText });
+        log.error('Token refresh failed', {
+          status: response.status,
+          statusText: response.statusText,
+        });
         log.debug('Refresh error response body', { body: rawBody });
 
         if (response.status === 401 || response.status === 403) {
           throw new RefreshTokenExpiredError();
-        } else if (response.status === 503 || rawBody.includes('cf-') || rawBody.includes('cloudflare')) {
+        } else if (
+          response.status === 503 ||
+          rawBody.includes('cf-') ||
+          rawBody.includes('cloudflare')
+        ) {
           throw new CloudflareBlockedError();
         }
         return false;
@@ -530,7 +559,7 @@ export class HopGPTClient {
         const bodyPreview = rawBody.slice(0, 200);
         log.error('Refresh response was not JSON (likely a session error from the server)', {
           bodyPreview,
-          parseError: parseError.message
+          parseError: parseError.message,
         });
         if (/refresh\s*token|session|unauthori[sz]ed|expired/i.test(rawBody)) {
           throw new RefreshTokenExpiredError();
@@ -544,7 +573,9 @@ export class HopGPTClient {
       if (data.token) {
         this.bearerToken = data.token;
         const newTokenInfo = this._getTokenExpiryInfo(data.token);
-        log.info('Bearer token refreshed', { expiresIn: newTokenInfo ? `${newTokenInfo.expiresInSeconds}s` : 'unknown' });
+        log.info('Bearer token refreshed', {
+          expiresIn: newTokenInfo ? `${newTokenInfo.expiresInSeconds}s` : 'unknown',
+        });
       } else {
         log.error('Refresh response did not contain token');
         return false;
@@ -560,7 +591,7 @@ export class HopGPTClient {
         const headerArray = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
         log.debug('Received Set-Cookie headers', {
           count: headerArray.length,
-          cookieNames: headerArray.map(h => h.split('=')[0]).join(', ')
+          cookieNames: headerArray.map((h) => h.split('=')[0]).join(', '),
         });
       }
 
@@ -569,18 +600,18 @@ export class HopGPTClient {
       if (this.cookies.connect_sid && this.cookies.connect_sid !== oldSid) {
         log.info('Session cookie rotated by server', {
           old: maskToken(oldSid),
-          new: maskToken(this.cookies.connect_sid)
+          new: maskToken(this.cookies.connect_sid),
         });
       }
       if (this.cookies.openid_user_id && this.cookies.openid_user_id !== oldOpenidId) {
         log.info('Refresh cookie (openid_user_id) rotated by server', {
           old: maskToken(oldOpenidId),
-          new: maskToken(this.cookies.openid_user_id)
+          new: maskToken(this.cookies.openid_user_id),
         });
       }
       if (!this.cookies.openid_user_id) {
         log.error('No openid_user_id after refresh — future refreshes will fail', {
-          hadOldOpenidId: !!oldOpenidId
+          hadOldOpenidId: !!oldOpenidId,
         });
       }
 
@@ -589,9 +620,11 @@ export class HopGPTClient {
 
       return true;
     } catch (error) {
-      if (error instanceof RefreshTokenExpiredError ||
-          error instanceof CloudflareBlockedError ||
-          error instanceof NetworkError) {
+      if (
+        error instanceof RefreshTokenExpiredError ||
+        error instanceof CloudflareBlockedError ||
+        error instanceof NetworkError
+      ) {
         throw error;
       }
       log.error('Token refresh error', { error: error.message });
@@ -623,7 +656,7 @@ export class HopGPTClient {
       'keep-alive',
       'proxy-connection',
       'te',
-      'trailer'
+      'trailer',
     ]);
 
     const sanitized = {};
@@ -672,9 +705,9 @@ export class HopGPTClient {
     const headers = {
       ...this.buildBrowserHeaders(browserType),
       'Content-Type': 'application/json',
-      'Accept': 'application/json, text/plain, */*',
-      'Origin': this.baseURL,
-      'Referer': `${this.baseURL}/c/new`
+      Accept: 'application/json, text/plain, */*',
+      Origin: this.baseURL,
+      Referer: `${this.baseURL}/c/new`,
     };
     if (this.bearerToken) {
       headers['Authorization'] = `Bearer ${this.bearerToken}`;
@@ -689,13 +722,18 @@ export class HopGPTClient {
       method: 'POST',
       headers,
       body: hopGPTRequest,
-      browserType
+      browserType,
     });
 
     if (!response.ok) {
       const body = await this._readResponseText(response);
       const retryAfterMs = this._extractRetryAfter(response.headers);
-      throw new HopGPTError(response.status, response.statusText || `HTTP ${response.status}`, body, retryAfterMs);
+      throw new HopGPTError(
+        response.status,
+        response.statusText || `HTTP ${response.status}`,
+        body,
+        retryAfterMs,
+      );
     }
 
     const rawBody = await this._readResponseText(response);
@@ -713,7 +751,7 @@ export class HopGPTClient {
     return {
       streamId: parsed.streamId,
       conversationId: parsed.conversationId,
-      status: parsed.status
+      status: parsed.status,
     };
   }
 
@@ -738,10 +776,10 @@ export class HopGPTClient {
     const browserType = this._resolveBrowserType();
     const headers = {
       ...this.buildBrowserHeaders(browserType),
-      'Accept': '*/*',
+      Accept: '*/*',
       'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
-      'Referer': `${this.baseURL}/c/new`
+      Pragma: 'no-cache',
+      Referer: `${this.baseURL}/c/new`,
     };
     if (this.bearerToken) {
       headers['Authorization'] = `Bearer ${this.bearerToken}`;
@@ -761,14 +799,16 @@ export class HopGPTClient {
         response = await fetch(url, {
           method: 'GET',
           headers: this._sanitizeHeadersForFetch(headers),
-          signal: requestOptions.signal
+          signal: requestOptions.signal,
         });
         usedFetch = true;
       } catch (error) {
         if (error?.name === 'AbortError') {
           throw error;
         }
-        log.debug('subscribeStream fetch failed, falling back to tlsFetch', { error: error.message });
+        log.debug('subscribeStream fetch failed, falling back to tlsFetch', {
+          error: error.message,
+        });
       }
     }
 
@@ -777,26 +817,32 @@ export class HopGPTClient {
         url,
         method: 'GET',
         headers,
-        browserType
+        browserType,
       });
     }
 
     if (!response.ok) {
       const body = await this._readResponseText(response);
       const retryAfterMs = this._extractRetryAfter(response.headers);
-      throw new HopGPTError(response.status, response.statusText || `HTTP ${response.status}`, body, retryAfterMs);
+      throw new HopGPTError(
+        response.status,
+        response.statusText || `HTTP ${response.status}`,
+        body,
+        retryAfterMs,
+      );
     }
 
-    const contentType = (typeof response.headers?.get === 'function'
-      ? response.headers.get('content-type')
-      : response.headers?.['content-type'] || response.headers?.['Content-Type']) || '';
+    const contentType =
+      (typeof response.headers?.get === 'function'
+        ? response.headers.get('content-type')
+        : response.headers?.['content-type'] || response.headers?.['Content-Type']) || '';
     const normalizedType = contentType.trim().toLowerCase();
     if (!normalizedType.startsWith('text/event-stream')) {
       const body = await this._readResponseText(response);
       throw new HopGPTError(
         502,
         `Expected text/event-stream from stream endpoint, got: ${contentType || '<missing>'}`,
-        body.slice(0, 500)
+        body.slice(0, 500),
       );
     }
 
@@ -819,12 +865,15 @@ export class HopGPTClient {
       rateLimitAttempt: 0,
       isPostAckAuthRetry: false,
       postAckRateLimitAttempt: 0,
-      ...retryState
+      ...retryState,
     };
     if (!retryState.isAuthRetry) {
       const tokenInfo = this._getTokenExpiryInfo(this.bearerToken);
       if (tokenInfo && tokenInfo.expiresInSeconds <= this.proactiveRefreshBufferSec + 60) {
-        log.debug('Token nearing expiry', { expiresIn: `${tokenInfo.expiresInSeconds}s`, buffer: `${this.proactiveRefreshBufferSec}s` });
+        log.debug('Token nearing expiry', {
+          expiresIn: `${tokenInfo.expiresInSeconds}s`,
+          buffer: `${this.proactiveRefreshBufferSec}s`,
+        });
       }
       const tokenValid = await this.ensureValidToken();
       if (!tokenValid) {
@@ -844,7 +893,7 @@ export class HopGPTClient {
         const retryAfterMs = error.retryAfterMs ?? null;
         log.warn('Rate limited on POST (pre-ack)', {
           attempt: `${rateLimitAttempt + 1}/${this.rateLimitConfig.maxRetries}`,
-          retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified'
+          retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified',
         });
         if (retryAfterMs !== null && retryAfterMs > this.rateLimitConfig.maxWaitTimeMs) {
           throw error;
@@ -854,21 +903,28 @@ export class HopGPTClient {
           await this._sleep(waitTime);
           return this.sendMessage(hopGPTRequest, requestOptions, {
             ...retryState,
-            rateLimitAttempt: rateLimitAttempt + 1
+            rateLimitAttempt: rateLimitAttempt + 1,
           });
         }
-        log.error('Rate limit retries exhausted on POST (pre-ack)', { attempts: rateLimitAttempt + 1 });
+        log.error('Rate limit retries exhausted on POST (pre-ack)', {
+          attempts: rateLimitAttempt + 1,
+        });
         throw error;
       }
-      if (error instanceof HopGPTError &&
-          (error.statusCode === 401 || error.statusCode === 403) &&
-          this.autoRefresh &&
-          !retryState.isAuthRetry) {
+      if (
+        error instanceof HopGPTError &&
+        (error.statusCode === 401 || error.statusCode === 403) &&
+        this.autoRefresh &&
+        !retryState.isAuthRetry
+      ) {
         log.warn('Auth error on POST (pre-ack); attempting refresh', { status: error.statusCode });
         const refreshed = await this.refreshTokens();
         if (refreshed) {
           log.info('Retrying POST (pre-ack) with refreshed token');
-          return this.sendMessage(hopGPTRequest, requestOptions, { ...retryState, isAuthRetry: true });
+          return this.sendMessage(hopGPTRequest, requestOptions, {
+            ...retryState,
+            isAuthRetry: true,
+          });
         }
         log.warn('Token refresh failed; not retrying POST (pre-ack)');
       }
@@ -899,7 +955,7 @@ export class HopGPTClient {
         log.warn('Rate limited on GET (post-ack)', {
           attempt: `${attempt + 1}/${this.rateLimitConfig.maxRetries}`,
           retryAfter: retryAfterMs !== null ? `${retryAfterMs}ms` : 'not specified',
-          streamId: ack.streamId
+          streamId: ack.streamId,
         });
         if (retryAfterMs !== null && retryAfterMs > this.rateLimitConfig.maxWaitTimeMs) {
           throw error;
@@ -909,27 +965,34 @@ export class HopGPTClient {
           await this._sleep(waitTime);
           return this._subscribeWithRetry(ack, requestOptions, {
             ...retryState,
-            postAckRateLimitAttempt: attempt + 1
+            postAckRateLimitAttempt: attempt + 1,
           });
         }
         log.error('Rate limit retries exhausted on GET (post-ack); NOT re-POSTing', {
           attempts: attempt + 1,
-          streamId: ack.streamId
+          streamId: ack.streamId,
         });
         throw error;
       }
-      if (error instanceof HopGPTError &&
-          (error.statusCode === 401 || error.statusCode === 403) &&
-          this.autoRefresh &&
-          !retryState.isPostAckAuthRetry) {
+      if (
+        error instanceof HopGPTError &&
+        (error.statusCode === 401 || error.statusCode === 403) &&
+        this.autoRefresh &&
+        !retryState.isPostAckAuthRetry
+      ) {
         log.warn('Auth error on GET (post-ack); attempting refresh (GET-only retry)', {
           status: error.statusCode,
-          streamId: ack.streamId
+          streamId: ack.streamId,
         });
         const refreshed = await this.refreshTokens();
         if (refreshed) {
-          log.info('Retrying GET with refreshed token, reusing streamId', { streamId: ack.streamId });
-          return this._subscribeWithRetry(ack, requestOptions, { ...retryState, isPostAckAuthRetry: true });
+          log.info('Retrying GET with refreshed token, reusing streamId', {
+            streamId: ack.streamId,
+          });
+          return this._subscribeWithRetry(ack, requestOptions, {
+            ...retryState,
+            isPostAckAuthRetry: true,
+          });
         }
         log.warn('Token refresh failed; not retrying GET (post-ack)');
       }
@@ -953,7 +1016,7 @@ export class HopGPTClient {
         const encoder = new TextEncoder();
         controller.enqueue(encoder.encode(body));
         controller.close();
-      }
+      },
     });
 
     return {
@@ -965,7 +1028,7 @@ export class HopGPTClient {
       // Also provide the raw body text for non-streaming use
       _rawBody: body,
       text: async () => body,
-      json: async () => JSON.parse(body)
+      json: async () => JSON.parse(body),
     };
   }
 
@@ -1010,7 +1073,7 @@ export class HopGPTClient {
     return {
       valid: missing.length === 0,
       missing,
-      warnings
+      warnings,
     };
   }
 }
@@ -1048,8 +1111,8 @@ export class HopGPTError extends Error {
       type: 'error',
       error: {
         type: errorType,
-        message: this.message
-      }
+        message: this.message,
+      },
     };
 
     // Include retry-after information for rate limit errors
@@ -1095,7 +1158,7 @@ export function getTokenExpiryInfo(token) {
     expiresAt: expiresAt.toISOString(),
     expiresAtMs: expiry.expiresAtMs,
     expiresInSeconds: Math.max(0, expiry.expiresInSeconds),
-    isExpired: expiry.isExpired
+    isExpired: expiry.isExpired,
   };
 }
 
@@ -1129,7 +1192,7 @@ function parseTokenExpiry(token) {
     return {
       expiresAtMs,
       expiresInSeconds,
-      isExpired: expiresInSeconds <= 0
+      isExpired: expiresInSeconds <= 0,
     };
   } catch (error) {
     return null;

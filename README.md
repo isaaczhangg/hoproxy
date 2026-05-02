@@ -122,7 +122,7 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | `HOPGPT_COOKIE_CONNECT_SID`                 | —           | Express session cookie; rotated on every token refresh.                                                              |
 | `HOPGPT_COOKIE_CF_CLEARANCE`                | —           | Cloudflare clearance cookie.                                                                                         |
 | `HOPGPT_COOKIE_CF_BM`                       | —           | Cloudflare bot management cookie.                                                                                    |
-| `HOPGPT_COOKIE_TOKEN_PROVIDER`              | `librechat` | Token provider; HopGPT production uses `openid`.                                                                     |
+| `HOPGPT_COOKIE_TOKEN_PROVIDER`              | `openid`    | Token provider for HopGPT's OIDC refresh path.                                                                        |
 | `HOPGPT_USER_AGENT`                         | —           | Browser `User-Agent`. Helps satisfy Cloudflare.                                                                      |
 | `HOPGPT_STREAMING_TRANSPORT`                | `fetch`     | `fetch` or `tls`. Switch to `tls` if Cloudflare blocks streaming on native fetch.                                    |
 | `HOPGPT_STREAM_IDLE_PING_DELAY_MS`          | `250`       | Delay before sending an early Anthropic `message_start` while HopGPT is still opening the upstream stream. Use `0` for immediate liveness. |
@@ -165,6 +165,7 @@ State expires after `CONVERSATION_TTL_MS` (6h default).
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | Connection refused                              | Proxy isn't running. `npm start`.                                                                                      |
 | `authentication_error` from HoProxy             | Re-run `npm run extract`, then restart the server.                                                                     |
+| Refresh logs show `Refresh token not provided`  | The refresh request is using the wrong provider or stale credentials. Upgrade to a build that defaults `HOPGPT_COOKIE_TOKEN_PROVIDER=openid`, then re-run `npm run extract` if it persists. |
 | 401/403 from HopGPT                             | `openid_user_id` JWT expired (~7-day lifespan). Re-run `npm run extract`.                                              |
 | Cloudflare "Attention Required" page            | CF cookies or UA stale. Re-run `npm run extract` and restart.                                                          |
 | Streaming output arrives all at once            | Try `HOPGPT_STREAMING_TRANSPORT=tls` if Cloudflare is blocking native fetch.                                            |

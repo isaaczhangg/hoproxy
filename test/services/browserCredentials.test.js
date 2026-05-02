@@ -1,11 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { describe, expect, it, vi } from 'vitest';
 import {
   generateEnvContent,
   refreshBrowserSession,
-  writeEnvFile
+  writeEnvFile,
 } from '../../src/services/browserCredentials.js';
 
 describe('generateEnvContent', () => {
@@ -18,10 +18,11 @@ describe('generateEnvContent', () => {
         openid_user_id: 'oid-abc',
         cf_clearance: null,
         __cf_bm: null,
-        token_provider: null
-      }
+        token_provider: null,
+      },
     });
     expect(content).toContain('HOPGPT_COOKIE_OPENID_USER_ID=oid-abc');
+    expect(content).not.toContain('HOPGPT_COOKIE_TOKEN_PROVIDER=');
     expect(content).not.toContain('HOPGPT_BEARER_TOKEN=');
     expect(content).not.toContain('HOPGPT_COOKIE_REFRESH_TOKEN');
   });
@@ -35,8 +36,8 @@ describe('generateEnvContent', () => {
         openid_user_id: 'oid-abc',
         cf_clearance: 'cf-1',
         __cf_bm: 'bm-2',
-        token_provider: 'openid'
-      }
+        token_provider: 'openid',
+      },
     });
     expect(content).toContain('HOPGPT_BEARER_TOKEN=bearer-xyz');
     expect(content).toContain('HOPGPT_USER_AGENT="Mozilla/5.0 test"');
@@ -56,7 +57,13 @@ describe('generateEnvContent — missing openid_user_id', () => {
     const content = generateEnvContent({
       bearerToken: null,
       userAgent: null,
-      cookies: { connect_sid: null, openid_user_id: null, cf_clearance: null, __cf_bm: null, token_provider: null }
+      cookies: {
+        connect_sid: null,
+        openid_user_id: null,
+        cf_clearance: null,
+        __cf_bm: null,
+        token_provider: null,
+      },
     });
     expect(content).not.toContain('HOPGPT_COOKIE_OPENID_USER_ID=');
   });
@@ -67,10 +74,9 @@ describe('writeEnvFile', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hopgpt-ext-'));
     try {
       const envPath = path.join(tmp, '.env');
-      fs.writeFileSync(envPath,
-        '# existing header\n' +
-        'HOPGPT_COOKIE_REFRESH_TOKEN=stale\n' +
-        'UNRELATED_VAR=keep-me\n'
+      fs.writeFileSync(
+        envPath,
+        '# existing header\n' + 'HOPGPT_COOKIE_REFRESH_TOKEN=stale\n' + 'UNRELATED_VAR=keep-me\n',
       );
 
       writeEnvFile(envPath, 'HOPGPT_COOKIE_OPENID_USER_ID=fresh\n');
@@ -94,9 +100,9 @@ describe('refreshBrowserSession', () => {
           ok: true,
           status: 200,
           contentType: 'application/json; charset=utf-8',
-          body: JSON.stringify({ token: 'minted-token' })
+          body: JSON.stringify({ token: 'minted-token' }),
         };
-      })
+      }),
     };
 
     const token = await refreshBrowserSession(page);
@@ -111,12 +117,12 @@ describe('refreshBrowserSession', () => {
         ok: true,
         status: 200,
         contentType: 'text/html; charset=utf-8',
-        body: 'Refresh token not provided'
-      }))
+        body: 'Refresh token not provided',
+      })),
     };
 
     await expect(refreshBrowserSession(page)).rejects.toThrow(
-      'Browser refresh failed: Refresh token not provided'
+      'Browser refresh failed: Refresh token not provided',
     );
   });
 });

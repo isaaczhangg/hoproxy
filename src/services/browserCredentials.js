@@ -2,10 +2,11 @@
  * Browser Credential Extraction Module
  * Extracts HopGPT credentials by observing authenticated API traffic.
  */
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
 import fs from 'fs';
 import path from 'path';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 const HOPGPT_URL = 'https://chat.ai.jh.edu';
 const USER_PATH = '/api/user';
@@ -18,7 +19,7 @@ async function launchBrowser(options = {}) {
   const launchOptions = {
     headless: false,
     defaultViewport: null,
-    args: ['--start-maximized']
+    args: ['--start-maximized'],
   };
 
   const userDataDir = options.userDataDir || process.env.HOPGPT_PUPPETEER_USER_DATA_DIR;
@@ -32,7 +33,9 @@ async function launchBrowser(options = {}) {
     return await puppeteer.launch({ ...launchOptions, channel });
   } catch (error) {
     if (!options.channel && !process.env.HOPGPT_PUPPETEER_CHANNEL) {
-      console.warn(`Failed to launch Chrome channel (${channel}). Falling back to bundled Chromium.`);
+      console.warn(
+        `Failed to launch Chrome channel (${channel}). Falling back to bundled Chromium.`,
+      );
       return await puppeteer.launch(launchOptions);
     }
     throw error;
@@ -104,13 +107,21 @@ export async function extractCredentials(options = {}) {
     });
 
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(
-        `Login not detected within ${timeout / 1000} seconds. Make sure you completed the SSO flow and landed on ${HOPGPT_URL}. Re-run with --timeout 600 if you need more time.`
-      )), timeout)
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Login not detected within ${timeout / 1000} seconds. Make sure you completed the SSO flow and landed on ${HOPGPT_URL}. Re-run with --timeout 600 if you need more time.`,
+            ),
+          ),
+        timeout,
+      ),
     );
 
     const disconnectedPromise = new Promise((_, reject) => {
-      browser.on('disconnected', () => reject(new Error('Browser was closed before login completed.')));
+      browser.on('disconnected', () =>
+        reject(new Error('Browser was closed before login completed.')),
+      );
     });
 
     await page.goto(HOPGPT_URL, { waitUntil: 'networkidle2' });
@@ -127,9 +138,10 @@ export async function extractCredentials(options = {}) {
 
     // Harvest cookies. Prefer browser.cookies() (modern API, sees every tab's jar);
     // fall back to page.cookies(url) on older Puppeteer.
-    const cookies = typeof browser.cookies === 'function'
-      ? await browser.cookies()
-      : await page.cookies(HOPGPT_URL);
+    const cookies =
+      typeof browser.cookies === 'function'
+        ? await browser.cookies()
+        : await page.cookies(HOPGPT_URL);
     const userAgent = await browser.userAgent().catch(() => null);
 
     const credentials = {
@@ -140,8 +152,8 @@ export async function extractCredentials(options = {}) {
         openid_user_id: findCookie(cookies, 'openid_user_id'),
         cf_clearance: findCookie(cookies, 'cf_clearance'),
         __cf_bm: findCookie(cookies, '__cf_bm'),
-        token_provider: findCookie(cookies, 'token_provider')
-      }
+        token_provider: findCookie(cookies, 'token_provider'),
+      },
     };
 
     if (!credentials.cookies.openid_user_id) {
@@ -166,13 +178,17 @@ export async function extractCredentials(options = {}) {
         'https://login.jh.edu',
         'https://auth.jh.edu',
         'https://my.jh.edu',
-        'https://ai.jh.edu'
+        'https://ai.jh.edu',
       ];
       console.error('\nDiagnostic — page.cookies() per candidate URL:');
       for (const u of urlCandidates) {
         try {
           const scoped = await page.cookies(u);
-          const names = scoped.map((c) => c.name).sort().join(', ') || '(none)';
+          const names =
+            scoped
+              .map((c) => c.name)
+              .sort()
+              .join(', ') || '(none)';
           console.error(`  ${u}: ${names}`);
         } catch (e) {
           console.error(`  ${u}: error — ${e.message}`);
@@ -181,8 +197,8 @@ export async function extractCredentials(options = {}) {
 
       throw new Error(
         `Logged in but openid_user_id cookie (the refresh credential) was not set. ` +
-        `See diagnostic above for visible cookies. ` +
-        `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`
+          `See diagnostic above for visible cookies. ` +
+          `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`,
       );
     }
 
@@ -194,8 +210,10 @@ export async function extractCredentials(options = {}) {
     console.log(`  connect.sid:    ${credentials.cookies.connect_sid ? 'yes' : 'no'}`);
     console.log(`  cf_clearance:   ${credentials.cookies.cf_clearance ? 'yes' : 'no'}`);
     console.log(`  __cf_bm:        ${credentials.cookies.__cf_bm ? 'yes' : 'no'}`);
-    console.log(`  token_provider: ${credentials.cookies.token_provider || '(default: librechat)'}`);
-    console.log(`  Bearer Token:   ${credentials.bearerToken ? 'yes' : 'no — will be minted on first request'}`);
+    console.log(`  token_provider: ${credentials.cookies.token_provider || '(default: openid)'}`);
+    console.log(
+      `  Bearer Token:   ${credentials.bearerToken ? 'yes' : 'no — will be minted on first request'}`,
+    );
     console.log(`  User Agent:     ${credentials.userAgent ? 'yes' : 'no'}`);
     console.log(`\nWrote .env → ${envPath}\n`);
 
@@ -209,7 +227,7 @@ export async function refreshBrowserSession(page) {
   const result = await page.evaluate(async (refreshPath) => {
     const response = await fetch(refreshPath, {
       method: 'POST',
-      credentials: 'include'
+      credentials: 'include',
     });
     const contentType = response.headers.get('content-type') || '';
     const body = await response.text();
@@ -218,7 +236,7 @@ export async function refreshBrowserSession(page) {
       ok: response.ok,
       status: response.status,
       contentType,
-      body
+      body,
     };
   }, REFRESH_PATH);
 
@@ -232,7 +250,8 @@ export async function refreshBrowserSession(page) {
   }
 
   if (!result.ok || !parsed?.token) {
-    const message = parsed?.message || parsed?.error?.message || result.body || `HTTP ${result.status}`;
+    const message =
+      parsed?.message || parsed?.error?.message || result.body || `HTTP ${result.status}`;
     throw new Error(`Browser refresh failed: ${message}`);
   }
 
@@ -252,7 +271,7 @@ export function generateEnvContent(credentials) {
     '# HopGPT Credentials',
     '# Auto-generated by browser credential extraction',
     `# Generated at: ${new Date().toISOString()}`,
-    ''
+    '',
   ];
 
   if (credentials.bearerToken) {
@@ -290,7 +309,7 @@ export function generateEnvContent(credentials) {
  * Also strips any stale HOPGPT_COOKIE_REFRESH_TOKEN line from prior versions.
  */
 export function writeEnvFile(envPath, newContent) {
-  let preservedLines = [];
+  const preservedLines = [];
 
   if (fs.existsSync(envPath)) {
     const existingContent = fs.readFileSync(envPath, 'utf-8');
@@ -303,21 +322,23 @@ export function writeEnvFile(envPath, newContent) {
       'HOPGPT_COOKIE_OPENID_USER_ID',
       'HOPGPT_COOKIE_CF_BM',
       'HOPGPT_COOKIE_REFRESH_TOKEN', // strip on rewrite
-      'HOPGPT_COOKIE_TOKEN_PROVIDER'
+      'HOPGPT_COOKIE_TOKEN_PROVIDER',
     ];
 
     for (const line of existingContent.split('\n')) {
       const trimmed = line.trim();
 
-      if (trimmed === '' ||
-          trimmed.startsWith('# HopGPT') ||
-          trimmed.startsWith('# Auto-generated') ||
-          trimmed.startsWith('# Generated at')) {
+      if (
+        trimmed === '' ||
+        trimmed.startsWith('# HopGPT') ||
+        trimmed.startsWith('# Auto-generated') ||
+        trimmed.startsWith('# Generated at')
+      ) {
         continue;
       }
 
-      const isHopgptVar = hopgptVars.some(v =>
-        trimmed.startsWith(v + '=') || trimmed.startsWith(`# ${v}`)
+      const isHopgptVar = hopgptVars.some(
+        (v) => trimmed.startsWith(v + '=') || trimmed.startsWith(`# ${v}`),
       );
       if (!isHopgptVar) {
         preservedLines.push(line);
