@@ -1,5 +1,4 @@
 import { v4 as uuidv4 } from 'uuid';
-import { createHash } from 'node:crypto';
 import { loggers } from '../utils/logger.js';
 
 const log = loggers.session;
@@ -40,84 +39,27 @@ function extractSessionIdFromMetadata(metadata) {
   if (!metadata || typeof metadata !== 'object') {
     return null;
   }
-  return normalizeId(metadata.session_id) ||
+  return (
+    normalizeId(metadata.session_id) ||
     normalizeId(metadata.sessionId) ||
     normalizeId(metadata.conversation_id) ||
-    normalizeId(metadata.conversationId);
-}
-
-function normalizeContentForSession(content) {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .map((block) => {
-      if (!block || typeof block !== 'object') {
-        return '';
-      }
-      if (typeof block.text === 'string') {
-        return block.text;
-      }
-      if (block.type === 'image') {
-        return '[image]';
-      }
-      if (block.type === 'tool_result') {
-        return `[tool_result:${block.tool_use_id || ''}]`;
-      }
-      return `[${block.type || 'block'}]`;
-    })
-    .join('\n');
-}
-
-function normalizeSystemForSession(system) {
-  if (typeof system === 'string') {
-    return system;
-  }
-  if (!Array.isArray(system)) {
-    return '';
-  }
-  return normalizeContentForSession(system);
-}
-
-function deriveSessionIdFromConversationRoot(requestBody) {
-  const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
-  const firstUserMessage = messages.find((message) => message?.role === 'user');
-  const firstUserText = normalizeContentForSession(firstUserMessage?.content).trim();
-  if (!firstUserText) {
-    return null;
-  }
-
-  const stableRoot = JSON.stringify({
-    model: requestBody?.model || '',
-    system: normalizeSystemForSession(requestBody?.system).trim(),
-    firstUser: firstUserText,
-  });
-  const digest = createHash('sha256').update(stableRoot).digest('hex').slice(0, 32);
-  return `derived:${digest}`;
+    normalizeId(metadata.conversationId)
+  );
 }
 
 export function resolveSessionId(req, requestBody) {
-  const headerSessionId = normalizeId(req.get('x-session-id')) ||
-    normalizeId(req.get('x-sessionid'));
+  const headerSessionId =
+    normalizeId(req.get('x-session-id')) || normalizeId(req.get('x-sessionid'));
   const metadataSessionId = extractSessionIdFromMetadata(requestBody?.metadata);
   const explicitSessionId = headerSessionId || metadataSessionId;
 
   if (explicitSessionId) {
-    log.debug('Using provided session ID', { sessionId: explicitSessionId.slice(0, 8) + '...' });
+    log.debug('Using provided session ID', { sessionId: `${explicitSessionId.slice(0, 8)}...` });
     return { sessionId: explicitSessionId, isGenerated: false };
   }
 
-  const derivedSessionId = deriveSessionIdFromConversationRoot(requestBody);
-  if (derivedSessionId) {
-    log.debug('Using derived conversation session ID', { sessionId: derivedSessionId.slice(0, 16) + '...' });
-    return { sessionId: derivedSessionId, isGenerated: false };
-  }
-
   const newSessionId = uuidv4();
-  log.debug('Generated new session ID', { sessionId: newSessionId.slice(0, 8) + '...' });
+  log.debug('Generated new session ID', { sessionId: `${newSessionId.slice(0, 8)}...` });
   return { sessionId: newSessionId, isGenerated: true };
 }
 
@@ -134,9 +76,11 @@ export function shouldResetConversation(req, requestBody) {
     return false;
   }
 
-  return metadata.conversation_reset === true ||
+  return (
+    metadata.conversation_reset === true ||
     metadata.reset === true ||
-    metadata.new_conversation === true;
+    metadata.new_conversation === true
+  );
 }
 
 export function getConversationState(sessionId) {
@@ -149,20 +93,22 @@ export function getConversationState(sessionId) {
 
   const entry = sessionStore.get(normalizedSessionId);
   if (!entry) {
-    log.debug('No existing conversation state', { sessionId: normalizedSessionId.slice(0, 8) + '...' });
+    log.debug('No existing conversation state', {
+      sessionId: `${normalizedSessionId.slice(0, 8)}...`,
+    });
     return null;
   }
 
   entry.lastTouchedAt = Date.now();
   log.debug('Retrieved conversation state', {
-    sessionId: normalizedSessionId.slice(0, 8) + '...',
+    sessionId: `${normalizedSessionId.slice(0, 8)}...`,
     hasConversationId: !!entry.conversationId,
-    hasLastMessageId: !!entry.lastAssistantMessageId
+    hasLastMessageId: !!entry.lastAssistantMessageId,
   });
   return {
     conversationId: entry.conversationId || null,
     lastAssistantMessageId: entry.lastAssistantMessageId || null,
-    systemPrompt: entry.systemPrompt || null
+    systemPrompt: entry.systemPrompt || null,
   };
 }
 
@@ -193,12 +139,12 @@ export function updateConversationState(sessionId, state) {
 
   entry.lastTouchedAt = now;
   sessionStore.set(normalizedSessionId, entry);
-  
+
   log.debug(isNew ? 'Created conversation state' : 'Updated conversation state', {
-    sessionId: normalizedSessionId.slice(0, 8) + '...',
+    sessionId: `${normalizedSessionId.slice(0, 8)}...`,
     hasConversationId: !!conversationId,
     hasLastMessageId: !!lastAssistantMessageId,
-    totalSessions: sessionStore.size
+    totalSessions: sessionStore.size,
   });
 }
 
@@ -210,6 +156,6 @@ export function resetConversationState(sessionId) {
   const existed = sessionStore.has(normalizedSessionId);
   sessionStore.delete(normalizedSessionId);
   if (existed) {
-    log.info('Reset conversation state', { sessionId: normalizedSessionId.slice(0, 8) + '...' });
+    log.info('Reset conversation state', { sessionId: `${normalizedSessionId.slice(0, 8)}...` });
   }
 }

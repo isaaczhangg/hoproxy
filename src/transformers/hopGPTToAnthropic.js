@@ -94,6 +94,21 @@ function includesAny(haystack, needles) {
   return needles.some((tag) => haystack.includes(tag));
 }
 
+function isAssistantCreatedMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return false;
+  }
+  if (message.isCreatedByUser === false) {
+    return true;
+  }
+  if (message.isCreatedByUser === true) {
+    return false;
+  }
+  const sender = typeof message.sender === 'string' ? message.sender.toLowerCase() : '';
+  const role = typeof message.role === 'string' ? message.role.toLowerCase() : '';
+  return ['assistant', 'claude', 'model'].includes(sender) || role === 'assistant';
+}
+
 function findToolInstructionStartIndex(text, fromIndex = 0) {
   if (!text) {
     return -1;
@@ -1718,6 +1733,7 @@ export class HopGPTToAnthropicTransformer {
     this._textSanitizeBuffer = '';
     this._toolLeakActive = false;
     this._lastTextChunk = null;
+    this.suppressedThinkingText = '';
 
     this.maxTokens = normalizeMaxTokens(options.maxTokens);
     this.stopSequences = normalizeStopSequences(options.stopSequences);
@@ -1749,7 +1765,7 @@ export class HopGPTToAnthropicTransformer {
     // Event type 1: Initial message created
     if (data.created && data.message) {
       const createdMessageId = data.message?.messageId || data.message?.id;
-      if (createdMessageId && !this.responseMessageId) {
+      if (createdMessageId && !this.responseMessageId && isAssistantCreatedMessage(data.message)) {
         this.responseMessageId = createdMessageId;
       }
       const createdConversationId =
@@ -1876,7 +1892,7 @@ export class HopGPTToAnthropicTransformer {
         }
       }
 
-      const stopEvents = this._createMessageStop();
+      const stopEvents = this._createMessageStop({ allowSuppressedThinkingFallback: true });
       if (stopEvents) {
         events.push(...stopEvents);
       }
@@ -2014,6 +2030,7 @@ export class HopGPTToAnthropicTransformer {
       }
 
       if (this.suppressThinking) {
+        this.suppressedThinkingText += thinkingText;
         if (signature) {
           this.thinkingSignature = signature;
           cacheThinkingSignature(this.thinkingSignature, 'claude');
@@ -2257,7 +2274,7 @@ export class HopGPTToAnthropicTransformer {
         this.accumulatedToolUses.push({ ...this.currentToolUse });
         this.currentToolUse = null;
       }
-      events.push(this._createBlockStop());
+      events.push(...this._createBlockStopEvents());
     }
 
     if (!this.blockStarted || this.currentBlockType !== 'thinking') {
@@ -2422,7 +2439,7 @@ export class HopGPTToAnthropicTransformer {
         this.accumulatedToolUses.push({ ...this.currentToolUse });
         this.currentToolUse = null;
       }
-      events.push(this._createBlockStop());
+      events.push(...this._createBlockStopEvents());
     }
 
     if (!this.blockStarted || this.currentBlockType !== 'text') {
@@ -2466,7 +2483,7 @@ export class HopGPTToAnthropicTransformer {
         },
       },
     });
-    events.push(this._createBlockStop());
+    events.push(...this._createBlockStopEvents());
     return events;
   }
 
@@ -2489,7 +2506,7 @@ export class HopGPTToAnthropicTransformer {
       if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
         this.accumulatedToolUses.push({ ...this.currentToolUse });
       }
-      events.push(this._createBlockStop());
+      events.push(...this._createBlockStopEvents());
     }
 
     if (
@@ -2690,6 +2707,7 @@ export class HopGPTToAnthropicTransformer {
           content_block: {
             type: 'thinking',
             thinking: '',
+            signature: '',
           },
         },
       });
@@ -2703,6 +2721,7 @@ export class HopGPTToAnthropicTransformer {
             type: 'tool_use',
             id: toolUseInfo?.id || generateToolUseId(),
             name: toolUseInfo?.name || '',
+            input: {},
           },
         },
       });
@@ -2726,6 +2745,25 @@ export class HopGPTToAnthropicTransformer {
   /**
    * Create a content block stop event
    */
+  _createBlockStopEvents() {
+    const events = [];
+    if (this.currentBlockType === 'thinking' && this.thinkingSignature) {
+      events.push({
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index: this.currentBlockIndex,
+          delta: {
+            type: 'signature_delta',
+            signature: this.thinkingSignature,
+          },
+        },
+      });
+    }
+    events.push(this._createBlockStop());
+    return events;
+  }
+
   _createBlockStop() {
     const event = {
       event: 'content_block_stop',
@@ -2774,7 +2812,8 @@ export class HopGPTToAnthropicTransformer {
     return events;
   }
 
-  _createMessageStop() {
+  _createMessageStop(options = {}) {
+    const { allowSuppressedThinkingFallback = false } = options;
     const events = [];
 
     // Mark that we're emitting message_stop
@@ -2834,7 +2873,17 @@ export class HopGPTToAnthropicTransformer {
 
     // Close any open content block
     if (this.blockStarted) {
-      events.push(this._createBlockStop());
+      events.push(...this._createBlockStopEvents());
+    }
+
+    if (
+      allowSuppressedThinkingFallback &&
+      this.hasStarted &&
+      !this.hasEmittedNonThinkingContent &&
+      !this.hasToolUse &&
+      this.suppressedThinkingText.trim().length > 0
+    ) {
+      events.push(...this._emitTextDelta(sanitizeTextFull(this.suppressedThinkingText)));
     }
 
     // If HopGPT closed the stream after thinking-only (no reply tokens, no tool

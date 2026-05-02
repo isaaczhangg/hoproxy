@@ -98,8 +98,7 @@ function buildToolInjectionPrompt(tools, toolChoice) {
   prompt += `\n## Tool Definitions\n\n`;
 
   for (const tool of tools) {
-    const schema = tool.input_schema ||
-      tool.parameters || { type: 'object', properties: {} };
+    const schema = tool.input_schema || tool.parameters || { type: 'object', properties: {} };
     const properties = schema.properties || {};
     const required = Array.isArray(schema.required) ? schema.required : [];
 
@@ -217,19 +216,13 @@ function pickBestSchemaOption(options) {
 
 function mergeSchemas(baseSchema, extraSchema) {
   const base = baseSchema && typeof baseSchema === 'object' ? baseSchema : {};
-  const extra =
-    extraSchema && typeof extraSchema === 'object' ? extraSchema : {};
+  const extra = extraSchema && typeof extraSchema === 'object' ? extraSchema : {};
 
   const merged = { ...base, ...extra };
 
-  const baseProps =
-    base.properties && typeof base.properties === 'object'
-      ? base.properties
-      : {};
+  const baseProps = base.properties && typeof base.properties === 'object' ? base.properties : {};
   const extraProps =
-    extra.properties && typeof extra.properties === 'object'
-      ? extra.properties
-      : {};
+    extra.properties && typeof extra.properties === 'object' ? extra.properties : {};
   merged.properties = { ...baseProps, ...extraProps };
 
   const required = new Set();
@@ -340,9 +333,7 @@ function sanitizeSchemaNode(schema, depth = 0) {
     }
 
     if (Array.isArray(resolved.required)) {
-      node.required = resolved.required.filter(
-        (item) => typeof item === 'string',
-      );
+      node.required = resolved.required.filter((item) => typeof item === 'string');
     }
   }
 
@@ -368,10 +359,7 @@ function sanitizeToolSchema(schema) {
     normalized.required = [];
   }
 
-  if (
-    normalized.type !== 'object' &&
-    Object.keys(normalized.properties).length === 0
-  ) {
+  if (normalized.type !== 'object' && Object.keys(normalized.properties).length === 0) {
     return {
       type: 'object',
       properties: {
@@ -393,14 +381,9 @@ function normalizeToolDefinition(tool, index) {
   const functionTool = tool.function || tool.custom || null;
   const rawName = tool.name || functionTool?.name || tool.custom?.name;
   const name =
-    typeof rawName === 'string' && rawName.trim().length > 0
-      ? rawName.trim()
-      : `tool-${index + 1}`;
+    typeof rawName === 'string' && rawName.trim().length > 0 ? rawName.trim() : `tool-${index + 1}`;
   const description =
-    tool.description ||
-    functionTool?.description ||
-    tool.custom?.description ||
-    '';
+    tool.description || functionTool?.description || tool.custom?.description || '';
   const rawSchema =
     tool.input_schema ||
     tool.parameters ||
@@ -503,9 +486,7 @@ function formatEnumHint(schema) {
     const type = typeof value;
     if (type === 'string') {
       const trimmed =
-        value.length > MAX_ENUM_VALUE_CHARS
-          ? `${value.slice(0, MAX_ENUM_VALUE_CHARS)}...`
-          : value;
+        value.length > MAX_ENUM_VALUE_CHARS ? `${value.slice(0, MAX_ENUM_VALUE_CHARS)}...` : value;
       rendered.push(JSON.stringify(trimmed));
     } else if (type === 'number' || type === 'boolean') {
       rendered.push(String(value));
@@ -517,9 +498,7 @@ function formatEnumHint(schema) {
   }
 
   const suffix =
-    values.length > MAX_ENUM_VALUES
-      ? `, ... (${values.length - MAX_ENUM_VALUES} more)`
-      : '';
+    values.length > MAX_ENUM_VALUES ? `, ... (${values.length - MAX_ENUM_VALUES} more)` : '';
   return ` — allowed: ${rendered.join(', ')}${suffix}`;
 }
 
@@ -542,9 +521,7 @@ function formatSchemaDetailLines(schema, depth = 0) {
   }
 
   if (schema.properties && typeof schema.properties === 'object') {
-    const required = new Set(
-      Array.isArray(schema.required) ? schema.required : [],
-    );
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
     const entries = Object.entries(schema.properties);
     for (const [name, propSchema] of entries.slice(0, MAX_SCHEMA_PROPERTIES)) {
       const reqMark = required.has(name) ? ' (required)' : '';
@@ -553,15 +530,11 @@ function formatSchemaDetailLines(schema, depth = 0) {
         ? `: ${truncateSchemaDescription(propSchema.description)}`
         : '';
       const propEnum = formatEnumHint(propSchema);
-      lines.push(
-        `${indent}- ${name}${reqMark} [${propType}]${propDesc}${propEnum}`,
-      );
+      lines.push(`${indent}- ${name}${reqMark} [${propType}]${propDesc}${propEnum}`);
       lines.push(...formatSchemaDetailLines(propSchema, depth + 1));
     }
     if (entries.length > MAX_SCHEMA_PROPERTIES) {
-      lines.push(
-        `${indent}- ... (${entries.length - MAX_SCHEMA_PROPERTIES} more)`,
-      );
+      lines.push(`${indent}- ... (${entries.length - MAX_SCHEMA_PROPERTIES} more)`);
     }
   }
 
@@ -599,9 +572,7 @@ export function transformToolChoice(toolChoice) {
 
   const toolChoiceConfig = getToolChoiceConfig(toolChoice);
   const applyDisableParallel = (value) =>
-    toolChoiceConfig.disableParallelToolUse
-      ? { ...value, disable_parallel_tool_use: true }
-      : value;
+    toolChoiceConfig.disableParallelToolUse ? { ...value, disable_parallel_tool_use: true } : value;
 
   // Handle string shortcuts
   if (typeof toolChoice === 'string') {
@@ -651,9 +622,7 @@ export function transformToolChoice(toolChoice) {
  */
 function formatToolUseBlock(block) {
   const inputStr =
-    typeof block.input === 'string'
-      ? block.input
-      : JSON.stringify(block.input, null, 2);
+    typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2);
   return `<tool_use id="${block.id}" name="${block.name}">\n${inputStr}\n</tool_use>`;
 }
 
@@ -667,11 +636,19 @@ function formatToolResultBlock(block) {
   if (typeof block.content === 'string') {
     content = block.content;
   } else if (Array.isArray(block.content)) {
-    // Handle array content (e.g., with text blocks)
     content = block.content
-      .filter((c) => c.type === 'text')
-      .map((c) => c.text)
+      .map((c) => {
+        if (!c || typeof c !== 'object') {
+          return String(c ?? '');
+        }
+        if (c.type === 'text' && typeof c.text === 'string') {
+          return c.text;
+        }
+        return JSON.stringify(c);
+      })
       .join('\n');
+  } else if (block.content !== undefined) {
+    content = JSON.stringify(block.content);
   }
 
   const errorAttr = block.is_error ? ' is_error="true"' : '';
@@ -805,11 +782,7 @@ function extractTextAndImages(content, imageDetail) {
     }
 
     if (block.type === 'image' && block.source) {
-      if (
-        block.source.type === 'base64' &&
-        block.source.data &&
-        block.source.media_type
-      ) {
+      if (block.source.type === 'base64' && block.source.data && block.source.media_type) {
         images.push({
           type: 'image_url',
           image_url: {
@@ -847,6 +820,31 @@ function findLastAssistantMessageIndex(messages) {
   return -1;
 }
 
+function messageHasContentBlock(message, blockType) {
+  if (!Array.isArray(message?.content)) {
+    return false;
+  }
+  return message.content.some((block) => block?.type === blockType);
+}
+
+function findLastAssistantToolUseIndex(messages, beforeIndex) {
+  if (!Array.isArray(messages)) {
+    return -1;
+  }
+
+  for (let i = Math.min(beforeIndex, messages.length - 1); i >= 0; i--) {
+    const message = messages[i];
+    if (
+      (message?.role === 'assistant' || message?.role === 'model') &&
+      messageHasContentBlock(message, 'tool_use')
+    ) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 function collectImagesFromMessages(messages, imageDetail) {
   const images = [];
 
@@ -866,10 +864,7 @@ function collectImagesFromMessages(messages, imageDetail) {
  * @param {object} conversationState - Optional conversation state for multi-turn
  * @returns {object} HopGPT request body
  */
-export function transformAnthropicToHopGPT(
-  anthropicRequest,
-  conversationState = null,
-) {
+export function transformAnthropicToHopGPT(anthropicRequest, conversationState = null) {
   const {
     model,
     messages,
@@ -914,8 +909,7 @@ export function transformAnthropicToHopGPT(
     conversationState?.systemPrompt ?? conversationState?.system,
   );
   const systemText = normalizedSystem ?? stateSystem;
-  const systemChanged =
-    normalizedSystem && stateSystem && normalizedSystem !== stateSystem;
+  const systemChanged = normalizedSystem && stateSystem && normalizedSystem !== stateSystem;
   const isNewConversation = !conversationState?.lastAssistantMessageId;
 
   // Get the latest user message
@@ -933,15 +927,25 @@ export function transformAnthropicToHopGPT(
     images = extracted.images;
   }
 
-  const shouldIncludeHistory =
-    isNewConversation && processedMessages.length > 1;
+  const shouldIncludeHistory = isNewConversation && processedMessages.length > 1;
   if (shouldIncludeHistory) {
     text = buildConversationText(processedMessages, systemText);
   } else {
+    const latestMessageHasToolResult = messageHasContentBlock(latestMessage, 'tool_result');
+    const lastToolUseIndex = latestMessageHasToolResult
+      ? findLastAssistantToolUseIndex(processedMessages, processedMessages.length - 2)
+      : -1;
+    if (lastToolUseIndex >= 0) {
+      const currentToolTurnMessages = processedMessages.slice(lastToolUseIndex);
+      const currentToolTurnText = buildConversationText(currentToolTurnMessages);
+      if (currentToolTurnText) {
+        text = currentToolTurnText;
+      }
+      images = collectImagesFromMessages(currentToolTurnMessages, imageDetail);
+    }
+
     if (thinkingRecoveryInsertedMessages && originalLastAssistantIndex >= 0) {
-      const currentTurnMessages = processedMessages.slice(
-        originalLastAssistantIndex + 1,
-      );
+      const currentTurnMessages = processedMessages.slice(originalLastAssistantIndex + 1);
       const currentTurnText = buildConversationText(currentTurnMessages);
       if (currentTurnText) {
         text = currentTurnText;
@@ -963,8 +967,7 @@ export function transformAnthropicToHopGPT(
 
   // Get parent message ID for conversation threading
   const parentMessageId =
-    conversationState?.lastAssistantMessageId ||
-    '00000000-0000-0000-0000-000000000000';
+    conversationState?.lastAssistantMessageId || '00000000-0000-0000-0000-000000000000';
 
   // Generate timestamp in HopGPT format
   const clientTimestamp = new Date().toISOString().slice(0, 19);
@@ -1042,10 +1045,7 @@ export function transformAnthropicToHopGPT(
   if (thinkingConfig.enabled) {
     hopGPTRequest.reasoning_effort = 'high';
     hopGPTRequest.reasoning_summary = 'detailed';
-    if (
-      Number.isFinite(thinkingConfig.budgetTokens) &&
-      thinkingConfig.budgetTokens > 0
-    ) {
+    if (Number.isFinite(thinkingConfig.budgetTokens) && thinkingConfig.budgetTokens > 0) {
       hopGPTRequest.thinking = {
         type: 'enabled',
         budget_tokens: Math.floor(thinkingConfig.budgetTokens),
