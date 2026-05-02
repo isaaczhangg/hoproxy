@@ -29,6 +29,15 @@ function createMockTLSResponse({
   };
 }
 
+function restoreEnv(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+
+  process.env[name] = value;
+}
+
 /**
  * Wire up tlsFetchSpy so that the two-phase chat flow returns an ack on POST
  * and an SSE body on GET. Tests that need to customize individual phases pass
@@ -84,6 +93,7 @@ describe('HopGPTClient', () => {
   let originalTokenProvider;
   let originalBunTest;
   let originalOpenidUserId;
+  let originalVitest;
 
   beforeEach(() => {
     // Mock tlsFetch instead of global fetch
@@ -92,30 +102,16 @@ describe('HopGPTClient', () => {
     originalTokenProvider = process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
     originalBunTest = process.env.BUN_TEST;
     originalOpenidUserId = process.env.HOPGPT_COOKIE_OPENID_USER_ID;
+    originalVitest = process.env.VITEST;
     delete process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
   });
 
   afterEach(() => {
-    if (originalProactiveRefreshBuffer === undefined) {
-      delete process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS;
-    } else {
-      process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS = originalProactiveRefreshBuffer;
-    }
-    if (originalTokenProvider === undefined) {
-      delete process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
-    } else {
-      process.env.HOPGPT_COOKIE_TOKEN_PROVIDER = originalTokenProvider;
-    }
-    if (originalBunTest === undefined) {
-      delete process.env.BUN_TEST;
-    } else {
-      process.env.BUN_TEST = originalBunTest;
-    }
-    if (originalOpenidUserId === undefined) {
-      delete process.env.HOPGPT_COOKIE_OPENID_USER_ID;
-    } else {
-      process.env.HOPGPT_COOKIE_OPENID_USER_ID = originalOpenidUserId;
-    }
+    restoreEnv('HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS', originalProactiveRefreshBuffer);
+    restoreEnv('HOPGPT_COOKIE_TOKEN_PROVIDER', originalTokenProvider);
+    restoreEnv('BUN_TEST', originalBunTest);
+    restoreEnv('HOPGPT_COOKIE_OPENID_USER_ID', originalOpenidUserId);
+    restoreEnv('VITEST', originalVitest);
     vi.restoreAllMocks();
   });
 
@@ -196,19 +192,10 @@ describe('HopGPTClient', () => {
     });
 
     it('is disabled under Bun test to avoid overwriting a real .env file', () => {
-      const originalVitest = process.env.VITEST;
       delete process.env.VITEST;
-      try {
-        process.env.BUN_TEST = '1';
-        const client = new HopGPTClient({ openidUserId: 'id' });
-        expect(client.autoPersist).toBe(false);
-      } finally {
-        if (originalVitest === undefined) {
-          delete process.env.VITEST;
-        } else {
-          process.env.VITEST = originalVitest;
-        }
-      }
+      process.env.BUN_TEST = '1';
+      const client = new HopGPTClient({ openidUserId: 'id' });
+      expect(client.autoPersist).toBe(false);
     });
   });
 

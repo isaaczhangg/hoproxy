@@ -31,6 +31,8 @@ const ANTML_INVOKE_START_TAG = '<antml:invoke';
 
 const FUNCTION_CALLS_TAGS = [FUNCTION_CALLS_START_TAG, ANTML_FUNCTION_CALLS_START_TAG];
 const INVOKE_TAGS = [INVOKE_START_TAG, ANTML_INVOKE_START_TAG];
+const FUNCTION_CALL_TAG_NAMES = new Set(['function_calls', 'antml:function_calls']);
+const INVOKE_TAG_NAMES = new Set(['invoke', 'antml:invoke']);
 
 const TOOL_TAG_NAMES = [
   'mcp_tool_call',
@@ -1511,11 +1513,11 @@ function parseIncompleteToolCallBlocks(block, options = {}) {
 }
 
 function isFunctionCallsTagName(tagName) {
-  return tagName === 'function_calls' || tagName === 'antml:function_calls';
+  return FUNCTION_CALL_TAG_NAMES.has(tagName);
 }
 
 function isInvokeTagName(tagName) {
-  return tagName === 'invoke' || tagName === 'antml:invoke';
+  return INVOKE_TAG_NAMES.has(tagName);
 }
 
 function stripLeadingFunctionCallClosings(text) {
@@ -1523,6 +1525,28 @@ function stripLeadingFunctionCallClosings(text) {
     return '';
   }
   return text.replace(/^\s*<\/(?:antml:)?function_calls>\s*/i, '');
+}
+
+function findInvokeClosingMatch(text, invokeTag) {
+  const startIndex = invokeTag.startTagEnd + 1;
+  const tagNames =
+    invokeTag.tagName === 'antml:invoke' ? [invokeTag.tagName, 'invoke'] : [invokeTag.tagName];
+
+  for (const tagName of tagNames) {
+    const closingMatch = findClosingTagMatch(text, startIndex, tagName);
+    if (closingMatch) {
+      return closingMatch;
+    }
+  }
+
+  for (const tagName of tagNames) {
+    const closingMatch = findClosingTagMatchLoose(text, startIndex, tagName);
+    if (closingMatch) {
+      return closingMatch;
+    }
+  }
+
+  return null;
 }
 
 function splitTrailingAfterIncrementalToolCalls(text) {
@@ -1584,16 +1608,7 @@ function splitOpenFunctionCallsRemainder(text) {
       break;
     }
 
-    let closingMatch = findClosingTagMatch(text, nextTag.startTagEnd + 1, nextTag.tagName);
-    if (!closingMatch && nextTag.tagName === 'antml:invoke') {
-      closingMatch = findClosingTagMatch(text, nextTag.startTagEnd + 1, 'invoke');
-    }
-    if (!closingMatch) {
-      closingMatch = findClosingTagMatchLoose(text, nextTag.startTagEnd + 1, nextTag.tagName);
-    }
-    if (!closingMatch && nextTag.tagName === 'antml:invoke') {
-      closingMatch = findClosingTagMatchLoose(text, nextTag.startTagEnd + 1, 'invoke');
-    }
+    const closingMatch = findInvokeClosingMatch(text, nextTag);
     if (!closingMatch) {
       break;
     }

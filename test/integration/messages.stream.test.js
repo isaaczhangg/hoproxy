@@ -5,34 +5,14 @@ import { RefreshTokenExpiredError } from '../../src/errors/authErrors.js';
 import messagesRouter from '../../src/routes/messages.js';
 import * as hopgptClientModule from '../../src/services/hopgptClient.js';
 
-function makeSSEResponse(body) {
+function makeSSEResponse(body, { close = true } = {}) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(encoder.encode(body));
-      controller.close();
-    },
-  });
-  return {
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    headers: {
-      get: (k) => (k.toLowerCase() === 'content-type' ? 'text/event-stream' : null),
-    },
-    body: stream,
-    text: async () => body,
-    json: async () => {
-      throw new Error('not json');
-    },
-  };
-}
-
-function makeHangingSSEResponse(body) {
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(encoder.encode(body));
+      if (close) {
+        controller.close();
+      }
     },
   });
   return {
@@ -378,7 +358,7 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS = '10';
     getDefaultClientSpy.mockReturnValue({
       validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
-      sendMessage: async () => makeHangingSSEResponse(harSSE),
+      sendMessage: async () => makeSSEResponse(harSSE, { close: false }),
     });
 
     const app = buildApp();

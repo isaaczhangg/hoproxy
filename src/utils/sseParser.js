@@ -47,6 +47,7 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
   const { autoEndOnMessageStop = false, onToolUseIdle = null, toolUseIdleCloseMs = null } = options;
   let stoppedOnMessageStop = false;
   let toolUseIdleTimer = null;
+
   const parser = createParser((event) => {
     if (stoppedOnMessageStop) {
       return;
@@ -58,39 +59,37 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
         data: event.data,
       };
 
-      const transformedEvents = transformEvent(parsedEvent);
+      const events = normalizeEvents(transformEvent(parsedEvent));
+      if (events.length === 0) {
+        return;
+      }
 
-      if (transformedEvents) {
-        const events = Array.isArray(transformedEvents) ? transformedEvents : [transformedEvents];
-        let sawToolUse = false;
-
-        for (const evt of events) {
-          // Check if response is still writable before writing
-          if (res.writableEnded || res.destroyed) {
-            return;
-          }
-
-          if (evt.event === 'message_start') {
-            log.debug('Streaming message_start', {
-              model: evt.data?.message?.model,
-              messageId: evt.data?.message?.id,
-            });
-          }
-
-          writeEvent(res, evt);
-          if (isToolUseStartEvent(evt)) {
-            sawToolUse = true;
-          }
-          if (autoEndOnMessageStop && evt.event === 'message_stop') {
-            clearToolUseIdleTimer();
-            stoppedOnMessageStop = true;
-            return;
-          }
+      let sawToolUse = false;
+      for (const evt of events) {
+        if (!isResponseWritable(res)) {
+          return;
         }
 
-        if (sawToolUse && !stoppedOnMessageStop) {
-          scheduleToolUseIdleClose();
+        if (evt.event === 'message_start') {
+          log.debug('Streaming message_start', {
+            model: evt.data?.message?.model,
+            messageId: evt.data?.message?.id,
+          });
         }
+
+        writeEvent(res, evt);
+        if (isToolUseStartEvent(evt)) {
+          sawToolUse = true;
+        }
+        if (autoEndOnMessageStop && isMessageStopEvent(evt)) {
+          clearToolUseIdleTimer();
+          stoppedOnMessageStop = true;
+          return;
+        }
+      }
+
+      if (sawToolUse && !stoppedOnMessageStop) {
+        scheduleToolUseIdleClose();
       }
     }
   });
@@ -117,18 +116,17 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
     clearToolUseIdleTimer();
     toolUseIdleTimer = setTimeout(() => {
       toolUseIdleTimer = null;
-      if (stoppedOnMessageStop || signal?.aborted || res.writableEnded || res.destroyed) {
+      if (stoppedOnMessageStop || signal?.aborted || !isResponseWritable(res)) {
         return;
       }
 
-      const events = onToolUseIdle();
-      const normalizedEvents = Array.isArray(events) ? events : events ? [events] : [];
-      for (const evt of normalizedEvents) {
-        if (res.writableEnded || res.destroyed) {
+      const events = normalizeEvents(onToolUseIdle());
+      for (const evt of events) {
+        if (!isResponseWritable(res)) {
           return;
         }
         writeEvent(res, evt);
-        if (evt.event === 'message_stop') {
+        if (isMessageStopEvent(evt)) {
           stoppedOnMessageStop = true;
         }
       }
@@ -145,7 +143,6 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
 
   try {
     while (true) {
-      // Check if aborted before reading next chunk
       if (signal?.aborted) {
         clearToolUseIdleTimer();
         await reader.cancel();
@@ -171,6 +168,17 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
   return { stoppedOnMessageStop };
 }
 
+function normalizeEvents(events) {
+  if (!events) {
+    return [];
+  }
+  return Array.isArray(events) ? events : [events];
+}
+
+function isResponseWritable(res) {
+  return !res.writableEnded && !res.destroyed;
+}
+
 function writeEvent(res, evt) {
   res.write(`event: ${evt.event}\n`);
   res.write(`data: ${JSON.stringify(evt.data)}\n\n`);
@@ -181,6 +189,10 @@ function writeEvent(res, evt) {
 
 function isToolUseStartEvent(evt) {
   return evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use';
+}
+
+function isMessageStopEvent(evt) {
+  return evt.event === 'message_stop';
 }
 
 /**
