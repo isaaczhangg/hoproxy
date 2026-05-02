@@ -28,7 +28,7 @@ import { parseSSEStream, pipeSSEStream } from '../utils/sseParser.js';
 
 const log = loggers.messages;
 const router = Router();
-const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 1000;
+const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 250;
 
 /**
  * POST /v1/messages/count_tokens
@@ -277,15 +277,20 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
   clearTimeout(idlePingTimer);
 
   try {
-    await pipeSSEStream(
+    writeSSEEvents(res, transformer.createMessageStart());
+
+    const pipeResult = await pipeSSEStream(
       hopGPTResponse,
       res,
       (event) => {
         return transformer.transformEvent(event);
       },
       abortController.signal,
-      { autoEndOnMessageStop: false },
+      { autoEndOnMessageStop: true },
     );
+    if (pipeResult?.stoppedOnMessageStop && !abortController.signal.aborted) {
+      abortController.abort();
+    }
 
     // Ensure the stream is properly terminated even if HopGPT didn't send a final event
     // This prevents clients from hanging indefinitely waiting for message_stop
@@ -346,7 +351,7 @@ function writeSSEEvents(res, events) {
   for (const event of events) {
     res.write(formatSSEEvent(event));
   }
-  if (typeof res.flush === 'function') {
+  if (events.length > 0 && typeof res.flush === 'function') {
     res.flush();
   }
 }
@@ -538,7 +543,7 @@ function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
     return false;
   }
 
-  return toolChoiceConfig.disableParallelToolUse;
+  return true;
 }
 
 function mapErrorResponse({ statusCode, message, responseBody, fallbackType, retryAfterMs }) {

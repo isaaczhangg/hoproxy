@@ -1095,10 +1095,18 @@ describe('hopGPTToAnthropic transformer', () => {
       event: 'on_message_delta',
       data: {
         delta: {
-          content: [{ type: 'text', text: functionCalls }],
+          content: [{ type: 'text', text: `Let me inspect this first.\n${functionCalls}\nDone.` }],
         },
       },
     });
+
+    const textDeltas = events
+      .filter(
+        (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta',
+      )
+      .map((evt) => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).toBe('');
 
     const toolStarts = events.filter(
       (evt) => evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use',

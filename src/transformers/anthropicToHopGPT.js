@@ -89,7 +89,7 @@ function buildToolInjectionPrompt(tools, toolChoice) {
   if (toolChoiceConfig.allowTools === false) {
     prompt += `Tool use is disabled for this response. Do not call any tools.\n`;
   } else {
-    prompt += `If you call tools, respond with ONLY the <tool_call> block(s) and no extra text. If you are not calling a tool, respond normally without any <tool_call> blocks.\n`;
+    prompt += `If you call tools, respond with ONLY the <tool_call> block(s) and no extra text. Do not narrate before, between, or after tool calls. If you are not calling a tool, respond normally without any <tool_call> blocks.\n`;
     if (toolChoiceConfig.disableParallelToolUse) {
       prompt += `Call at most one tool per response, then wait for tool results before calling another tool.\n`;
     }
@@ -138,7 +138,7 @@ function buildToolInjectionPrompt(tools, toolChoice) {
     if (toolChoiceConfig.disableParallelToolUse) {
       prompt += `Call at most one tool per response. After calling a tool, wait for the result before proceeding.\n`;
     } else {
-      prompt += `You may call multiple tools in one response when they can run in parallel by outputting multiple <tool_call> blocks back-to-back. After calling tool(s), wait for the result(s) before proceeding.\n`;
+      prompt += `Prefer one contiguous batch containing every independent tool call you can determine now. Output multiple <tool_call> blocks back-to-back with no prose or pauses between them. After calling tool(s), wait for the result(s) before proceeding.\n`;
     }
   }
 
