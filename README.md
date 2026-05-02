@@ -153,7 +153,7 @@ During extraction, HoProxy validates the browser session by making a real in-bro
 HoProxy keeps HopGPT conversation threading in memory so multi-turn calls reuse context:
 
 - Pass a stable session key via the `X-Session-Id` request header or any of `metadata.{session_id,sessionId,conversation_id,conversationId}`.
-- Omit it and the proxy generates one, echoed back as `X-Session-Id` on the response.
+- Omit it and the proxy generates a one-off key, echoed back as `X-Session-Id` on the response. If your client does not return that key, HoProxy treats the next request as stateless and forwards the client-provided transcript instead of deriving a shared session from common first prompts like `hi`.
 - Reset a conversation with `X-Conversation-Reset: true` or `metadata.{conversation_reset,reset,new_conversation}`.
 
 State expires after `CONVERSATION_TTL_MS` (6h default).
@@ -170,12 +170,15 @@ State expires after `CONVERSATION_TTL_MS` (6h default).
 | Model warning / not found                       | Use a canonical model from the table above, or hit `GET /v1/models`.                                                   |
 | Claude Code still calls `api.anthropic.com`     | `ANTHROPIC_BASE_URL` isn't being read. Double-check `~/.claude/settings.json` and restart Claude Code.                 |
 | Tool-call XML rendered as text                  | Passthrough mode is on. See [Appendix B](#appendix-b-mcp-passthrough-mode) — the default (off) converts XML to `tool_use`. |
+| Agent stops after tool results or `continue`    | Upgrade to a build with continuation fixes: forced-closed streams no longer store HopGPT's user-message id as the assistant parent, tool-result turns replay the matching `tool_use`, and stateless clients avoid shared derived sessions. |
 
 Need deeper insight? `HOPGPT_DEBUG=true npm start` logs incoming HopGPT events, detected tool-call XML, and parsed tool calls. `GET /token-debug` compares in-memory auth state against `.env`.
 
 ## Streaming protocol
 
 HopGPT uses a two-phase chat protocol. HoProxy POSTs `/api/agents/chat/AnthropicClaude` to get a `{streamId, conversationId, status:"started"}` ack, then GETs `/api/agents/chat/stream/{streamId}` for the SSE event stream. Retry policy splits by phase: POST 401/403/429 fully re-runs the sequence; GET 401/403/429 retries the subscription only (reusing the same `streamId`) to avoid duplicating the user's persisted message on HopGPT's server. No user-visible configuration changes.
+
+The outgoing Anthropic stream keeps strict block shape for SDK clients: `tool_use` block starts include `input: {}` before `input_json_delta` chunks, and thinking blocks emit `signature_delta` before `content_block_stop` when HopGPT provides a signature.
 
 ## Testing
 

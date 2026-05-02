@@ -95,6 +95,11 @@ describe('anthropicToHopGPT transformers', () => {
           role: 'assistant',
           content: [
             {
+              type: 'thinking',
+              thinking: 'I should inspect the project metadata before answering.',
+              signature: 'x'.repeat(50),
+            },
+            {
               type: 'tool_use',
               id: 'toolu_read',
               name: 'Read',
@@ -121,11 +126,54 @@ describe('anthropicToHopGPT transformers', () => {
     });
 
     expect(result.parentMessageId).toBe('assistant-1');
+    expect(result.text).toContain('<tool_use id="toolu_read" name="Read">');
+    expect(result.text).toContain('"file_path": "package.json"');
     expect(result.text).toContain('<tool_result tool_use_id="toolu_read">');
     expect(result.text).toContain('{"name":"hopgpt-anthropic-proxy"}');
+    expect(result.text).not.toContain('I should inspect the project metadata');
     expect(result.text).not.toContain('[Tool execution completed.]');
     expect(result.text).not.toContain('[Continue]');
     expect(result.text).not.toContain('can you explore the codebase');
+  });
+
+  it('serializes non-text tool result content instead of dropping it', () => {
+    const request = {
+      model: 'claude-opus-4-5',
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_view',
+              name: 'ViewImage',
+              input: { path: 'figure.png' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_view',
+              content: [
+                { type: 'text', text: 'Rendered image:' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = transformAnthropicToHopGPT(request, {
+      lastAssistantMessageId: 'assistant-1',
+    });
+
+    expect(result.text).toContain('Rendered image:');
+    expect(result.text).toContain('"type":"image"');
+    expect(result.text).toContain('"media_type":"image/png"');
   });
 
   it('extracts thinking configuration and signatures', async () => {

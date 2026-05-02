@@ -279,6 +279,68 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(res.text).toContain('\\"file_path\\":\\"src/index.js\\"');
   });
 
+  it('surfaces final answer text on tool-result continuations without another tool call', async () => {
+    const answerText = 'The README says HoProxy exposes an Anthropic-compatible API.';
+    const harSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"m2","conversationId":"c1","sender":"User","isCreatedByUser":true}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [
+              {
+                type: 'text',
+                text: answerText,
+              },
+            ],
+          },
+        },
+      })}\n\n` +
+      'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r2","conversationId":"c1","content":[]}}\n\n';
+
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: async () => makeSSEResponse(harSSE),
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [
+          { role: 'user', content: 'inspect the README' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_read',
+                name: 'Read',
+                input: { file_path: 'README.md' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_read',
+                content: '# HoProxy',
+              },
+            ],
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain(answerText);
+    expect(res.text).toContain('"stop_reason":"end_turn"');
+  });
+
   it('stores HopGPT conversation state before completing the stream', async () => {
     const firstSSE =
       'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1"}}\n\n' +
@@ -330,7 +392,56 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(hopGPTRequests[1].text).toBe('again');
   });
 
-  it('threads clients that do not return the generated session header', async () => {
+  it('does not store a user created id as the assistant parent when a stream is forced closed', async () => {
+    const truncatedSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1","sender":"User","isCreatedByUser":true}}\n\n' +
+      'event: message\ndata: {"event":"on_message_delta","data":{"delta":{"content":[{"type":"text","text":"Partial"}]}}}\n\n';
+    const secondSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"u2","conversationId":"c1","sender":"User","isCreatedByUser":true}}\n\n' +
+      'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r2","conversationId":"c1","content":[{"type":"text","text":"Again"}]}}\n\n';
+    const hopGPTRequests = [];
+
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: async (hopGPTRequest) => {
+        hopGPTRequests.push(hopGPTRequest);
+        return makeSSEResponse(hopGPTRequests.length === 1 ? truncatedSSE : secondSSE);
+      },
+    });
+
+    const app = buildApp();
+    const sessionId = `stream-force-end-${Date.now()}`;
+    await request(app)
+      .post('/v1/messages')
+      .set('X-Session-Id', sessionId)
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      .expect(200);
+
+    await request(app)
+      .post('/v1/messages')
+      .set('X-Session-Id', sessionId)
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'Partial' },
+          { role: 'user', content: 'continue' },
+        ],
+      })
+      .expect(200);
+
+    expect(hopGPTRequests[1].parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
+    expect(hopGPTRequests[1].parentMessageId).not.toBe('u1');
+  });
+
+  it('does not reuse generated fallback sessions across clients without an explicit session id', async () => {
     const firstSSE =
       'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1"}}\n\n' +
       'event: message\ndata: {"event":"on_message_delta","data":{"delta":{"content":[{"type":"text","text":"Hi"}]}}}\n\n' +
@@ -374,9 +485,10 @@ describe('POST /v1/messages streaming — end-to-end', () => {
       })
       .expect(200);
 
-    expect(hopGPTRequests[1].parentMessageId).toBe('r1');
-    expect(hopGPTRequests[1].text).toBe('again');
-    expect(hopGPTRequests[1].text).not.toContain('Human: hi');
+    expect(hopGPTRequests[1].parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
+    expect(hopGPTRequests[1].text).toContain('Human: hi');
+    expect(hopGPTRequests[1].text).toContain('Assistant: Hi');
+    expect(hopGPTRequests[1].text).toContain('Human: again');
   });
 
   // Regression: a pre-stream failure (expired creds, CF block, network error)

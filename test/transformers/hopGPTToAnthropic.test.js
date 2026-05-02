@@ -17,7 +17,7 @@ describe('hopGPTToAnthropic transformer', () => {
     );
   });
 
-  it('captures created message id for conversation state', () => {
+  it('ignores user created message ids for conversation state', () => {
     const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
       thinkingEnabled: false,
     });
@@ -26,7 +26,24 @@ describe('hopGPTToAnthropic transformer', () => {
       event: 'message',
       data: JSON.stringify({
         created: true,
-        message: { id: 'msg-create' },
+        message: { id: 'msg-create', sender: 'User', isCreatedByUser: true },
+      }),
+    });
+
+    const state = transformer.getConversationState();
+    expect(state.lastAssistantMessageId).toBeNull();
+  });
+
+  it('captures assistant created message ids for conversation state', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
+      thinkingEnabled: false,
+    });
+
+    transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        created: true,
+        message: { id: 'msg-create', sender: 'Claude', isCreatedByUser: false },
       }),
     });
 
@@ -297,7 +314,9 @@ describe('hopGPTToAnthropic transformer', () => {
     );
     expect(toolStarts.length).toBe(2);
     expect(toolStarts[0].data.content_block.name).toBe('Glob');
+    expect(toolStarts[0].data.content_block.input).toEqual({});
     expect(toolStarts[1].data.content_block.name).toBe('Read');
+    expect(toolStarts[1].data.content_block.input).toEqual({});
 
     const response = transformer.buildNonStreamingResponse();
     const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
@@ -373,6 +392,7 @@ describe('hopGPTToAnthropic transformer', () => {
     );
     expect(toolStarts).toHaveLength(1);
     expect(toolStarts[0].data.content_block.name).toBe('Read');
+    expect(toolStarts[0].data.content_block.input).toEqual({});
 
     const response = transformer.buildNonStreamingResponse();
     expect(response.content.some((block) => block.type === 'thinking')).toBe(false);
@@ -380,6 +400,68 @@ describe('hopGPTToAnthropic transformer', () => {
       expect.arrayContaining([expect.objectContaining({ type: 'tool_use', name: 'Read' })]),
     );
     expect(response.stop_reason).toBe('tool_use');
+  });
+
+  it('emits suppressed indexless text as a final answer when no tool call follows', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true,
+      suppressThinking: true,
+    });
+
+    const events = [];
+    const pushEvents = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data),
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    pushEvents({
+      created: true,
+      message: { id: 'msg-create', sender: 'User', isCreatedByUser: true },
+    });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [{ type: 'text', text: 'The README describes HoProxy as an API proxy.' }],
+        },
+      },
+    });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: [],
+      },
+    });
+
+    const textDeltas = events
+      .filter(
+        (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta',
+      )
+      .map((evt) => evt.data.delta.text)
+      .join('');
+
+    expect(textDeltas).toBe('The README describes HoProxy as an API proxy.');
+    expect(textDeltas).not.toBe('');
+
+    const textDeltaIndex = events.findIndex(
+      (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta',
+    );
+    const fallbackStopIndex = events.findIndex(
+      (evt, index) => index > textDeltaIndex && evt.event === 'content_block_stop',
+    );
+    const messageDeltaIndex = events.findIndex((evt) => evt.event === 'message_delta');
+
+    expect(fallbackStopIndex).toBeGreaterThan(textDeltaIndex);
+    expect(fallbackStopIndex).toBeLessThan(messageDeltaIndex);
   });
 
   it('emits indexless text as regular text when thinking is disabled', () => {
@@ -500,6 +582,16 @@ describe('hopGPTToAnthropic transformer', () => {
       .map((evt) => evt.data.delta.thinking)
       .join('');
     expect(thinkingDeltas).toContain('The user just said');
+
+    const signatureIndex = events.findIndex(
+      (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'signature_delta',
+    );
+    const thinkingStopIndex = events.findIndex(
+      (evt) => evt.event === 'content_block_stop' && evt.data?.index === 0,
+    );
+    expect(signatureIndex).toBeGreaterThan(-1);
+    expect(events[signatureIndex].data.delta.signature).toBe('sig-thought-1');
+    expect(thinkingStopIndex).toBeGreaterThan(signatureIndex);
   });
 
   it('routes Gemini-style thought blocks in final responseMessage content to thinking', () => {
