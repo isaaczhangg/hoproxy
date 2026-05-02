@@ -29,6 +29,7 @@ import { parseSSEStream, pipeSSEStream } from '../utils/sseParser.js';
 const log = loggers.messages;
 const router = Router();
 const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 250;
+const DEFAULT_TOOL_BATCH_IDLE_CLOSE_MS = 750;
 
 /**
  * POST /v1/messages/count_tokens
@@ -289,7 +290,11 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
         return transformer.transformEvent(event);
       },
       abortController.signal,
-      { autoEndOnMessageStop: true },
+      {
+        autoEndOnMessageStop: true,
+        onToolUseIdle: () => transformer.forceEnd(),
+        toolUseIdleCloseMs: getToolBatchIdleCloseMs(),
+      },
     );
     if (pipeResult?.stoppedOnMessageStop && !abortController.signal.aborted) {
       abortController.abort();
@@ -348,6 +353,11 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
 function getStreamIdlePingDelayMs() {
   const parsed = Number.parseInt(process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS ?? '', 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_STREAM_IDLE_PING_DELAY_MS;
+}
+
+function getToolBatchIdleCloseMs() {
+  const parsed = Number.parseInt(process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TOOL_BATCH_IDLE_CLOSE_MS;
 }
 
 function writeSSEEvents(res, events) {

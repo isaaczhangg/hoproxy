@@ -1510,6 +1510,116 @@ function parseIncompleteToolCallBlocks(block, options = {}) {
   return [];
 }
 
+function isFunctionCallsTagName(tagName) {
+  return tagName === 'function_calls' || tagName === 'antml:function_calls';
+}
+
+function isInvokeTagName(tagName) {
+  return tagName === 'invoke' || tagName === 'antml:invoke';
+}
+
+function stripLeadingFunctionCallClosings(text) {
+  if (!text) {
+    return '';
+  }
+  return text.replace(/^\s*<\/(?:antml:)?function_calls>\s*/i, '');
+}
+
+function splitTrailingAfterIncrementalToolCalls(text) {
+  const segments = [];
+  const trailing = stripLeadingFunctionCallClosings(text);
+
+  if (!trailing) {
+    return { segments, remainder: '' };
+  }
+
+  const nextTag = findNextToolTag(trailing, 0);
+  if (nextTag) {
+    if (nextTag.index > 0) {
+      segments.push({ type: 'text', text: trailing.slice(0, nextTag.index) });
+    }
+    return { segments, remainder: trailing.slice(nextTag.index) };
+  }
+
+  const lastLt = trailing.lastIndexOf('<');
+  if (lastLt !== -1) {
+    const possibleTag = trailing.slice(lastLt);
+    const matchingTag = TOOL_TAG_NAMES.find((tag) => `<${tag}`.startsWith(possibleTag));
+    if (matchingTag && isLikelyToolTagStart(trailing, lastLt, matchingTag)) {
+      if (lastLt > 0) {
+        segments.push({ type: 'text', text: trailing.slice(0, lastLt) });
+      }
+      return { segments, remainder: possibleTag };
+    }
+  }
+
+  segments.push({ type: 'text', text: trailing });
+  return { segments, remainder: '' };
+}
+
+function splitOpenFunctionCallsRemainder(text) {
+  const openingTag = findNextToolTag(text, 0);
+  if (
+    !openingTag ||
+    openingTag.index !== 0 ||
+    openingTag.startTagEnd === -1 ||
+    !isFunctionCallsTagName(openingTag.tagName)
+  ) {
+    return null;
+  }
+
+  const segments = [];
+  let consumedThrough = openingTag.startTagEnd + 1;
+  let scanIndex = consumedThrough;
+
+  while (scanIndex < text.length) {
+    const nextTag = findNextToolTag(text, scanIndex);
+    if (!nextTag) {
+      break;
+    }
+    if (!isInvokeTagName(nextTag.tagName)) {
+      break;
+    }
+    if (nextTag.startTagEnd === -1) {
+      break;
+    }
+
+    let closingMatch = findClosingTagMatch(text, nextTag.startTagEnd + 1, nextTag.tagName);
+    if (!closingMatch && nextTag.tagName === 'antml:invoke') {
+      closingMatch = findClosingTagMatch(text, nextTag.startTagEnd + 1, 'invoke');
+    }
+    if (!closingMatch) {
+      closingMatch = findClosingTagMatchLoose(text, nextTag.startTagEnd + 1, nextTag.tagName);
+    }
+    if (!closingMatch && nextTag.tagName === 'antml:invoke') {
+      closingMatch = findClosingTagMatchLoose(text, nextTag.startTagEnd + 1, 'invoke');
+    }
+    if (!closingMatch) {
+      break;
+    }
+
+    const invokeBlock = text.slice(nextTag.index, closingMatch.endIndex);
+    const toolCall = parseInvokeBlock(invokeBlock);
+    if (!toolCall) {
+      break;
+    }
+
+    segments.push({ type: 'tool_call', toolCall });
+    consumedThrough = closingMatch.endIndex;
+    scanIndex = closingMatch.endIndex;
+  }
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const trailing = splitTrailingAfterIncrementalToolCalls(text.slice(consumedThrough));
+  return {
+    segments: [...segments, ...trailing.segments],
+    remainder: trailing.remainder,
+  };
+}
+
 function splitMcpToolCalls(text, allowIncomplete = false) {
   if (!text) {
     return [];
@@ -1551,6 +1661,14 @@ function splitStreamTextForMcpToolCalls(text) {
   if (nextTag) {
     const startIndex = nextTag.index;
     const potentialRemainder = trailing.slice(startIndex);
+    const openFunctionCalls = splitOpenFunctionCallsRemainder(potentialRemainder);
+    if (openFunctionCalls) {
+      if (startIndex > 0) {
+        segments.push({ type: 'text', text: trailing.slice(0, startIndex) });
+      }
+      segments.push(...openFunctionCalls.segments);
+      return { segments, remainder: openFunctionCalls.remainder };
+    }
     if (potentialRemainder.length > MAX_BUFFER_SIZE) {
       const incompleteBlocks = parseIncompleteToolCallBlocks(potentialRemainder, {
         allowFunctionCalls: false,

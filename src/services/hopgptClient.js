@@ -27,12 +27,29 @@ function maskToken(token) {
   return `${token.substring(0, 10)}...${token.substring(token.length - 10)}`;
 }
 
+function configOrEnv(configValue, envValue) {
+  return configValue === undefined ? envValue : configValue;
+}
+
 function resolveTokenProvider(configTokenProvider, openidUserId) {
-  const configuredProvider = configTokenProvider || process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
+  const configuredProvider = configOrEnv(
+    configTokenProvider,
+    process.env.HOPGPT_COOKIE_TOKEN_PROVIDER,
+  );
   if (openidUserId && (!configuredProvider || configuredProvider.toLowerCase() === 'librechat')) {
     return DEFAULT_TOKEN_PROVIDER;
   }
   return configuredProvider || DEFAULT_TOKEN_PROVIDER;
+}
+
+function isTestRuntime() {
+  const isBunTestCommand = Boolean(process.versions?.bun) && process.argv.includes('test');
+  return (
+    process.env.VITEST === 'true' ||
+    process.env.BUN_TEST === '1' ||
+    process.env.NODE_ENV === 'test' ||
+    isBunTestCommand
+  );
 }
 
 /**
@@ -45,13 +62,13 @@ export class HopGPTClient {
     this.baseURL = config.baseURL || 'https://chat.ai.jh.edu';
     this.endpoint = config.endpoint || '/api/agents/chat/AnthropicClaude';
     this.streamEndpointPrefix = config.streamEndpointPrefix || '/api/agents/chat/stream/';
-    this.bearerToken = config.bearerToken || process.env.HOPGPT_BEARER_TOKEN;
-    this.userAgent = config.userAgent || process.env.HOPGPT_USER_AGENT;
-    const openidUserId = config.openidUserId || process.env.HOPGPT_COOKIE_OPENID_USER_ID;
+    this.bearerToken = configOrEnv(config.bearerToken, process.env.HOPGPT_BEARER_TOKEN);
+    this.userAgent = configOrEnv(config.userAgent, process.env.HOPGPT_USER_AGENT);
+    const openidUserId = configOrEnv(config.openidUserId, process.env.HOPGPT_COOKIE_OPENID_USER_ID);
     this.cookies = {
-      cf_clearance: config.cfClearance || process.env.HOPGPT_COOKIE_CF_CLEARANCE,
-      connect_sid: config.connectSid || process.env.HOPGPT_COOKIE_CONNECT_SID,
-      __cf_bm: config.cfBm || process.env.HOPGPT_COOKIE_CF_BM,
+      cf_clearance: configOrEnv(config.cfClearance, process.env.HOPGPT_COOKIE_CF_CLEARANCE),
+      connect_sid: configOrEnv(config.connectSid, process.env.HOPGPT_COOKIE_CONNECT_SID),
+      __cf_bm: configOrEnv(config.cfBm, process.env.HOPGPT_COOKIE_CF_BM),
       // In HopGPT's OIDC config the refresh credential is the `openid_user_id`
       // cookie (it's a JWT despite the name). Missing it → /api/auth/refresh
       // returns "Refresh token not provided".
@@ -71,8 +88,8 @@ export class HopGPTClient {
     );
 
     // Auto-persist credentials to .env after refresh. Disable by default under
-    // Vitest so mocked refreshes cannot overwrite a developer's real .env.
-    this.autoPersist = config.autoPersist ?? process.env.VITEST !== 'true';
+    // test runners so mocked refreshes cannot overwrite a developer's real .env.
+    this.autoPersist = config.autoPersist ?? !isTestRuntime();
     this.envPath = config.envPath || path.join(process.cwd(), '.env');
 
     // Rate limiting configuration

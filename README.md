@@ -38,7 +38,7 @@ Restart Claude Code. HoProxy ignores the auth token, but Claude Code requires a 
 
 ### OpenCode
 
-Point OpenCode at `http://localhost:3001` as an Anthropic-compatible provider. HoProxy handles OpenCode's tool-use flow out of the box — it injects tool definitions into the prompt, parses the model's XML tool calls, and returns standard Anthropic `tool_use` blocks. Tool streams are closed as soon as a complete tool-call batch is emitted so OpenCode can run tools immediately instead of waiting for HopGPT to finish extra narration. If your client parses XML tool calls directly from the text stream instead, see [Appendix B: MCP passthrough mode](#appendix-b-mcp-passthrough-mode).
+Point OpenCode at `http://localhost:3001` as an Anthropic-compatible provider. HoProxy handles OpenCode's tool-use flow out of the box — it injects tool definitions into the prompt, parses the model's XML tool calls, and returns standard Anthropic `tool_use` blocks. Tool streams are closed as soon as a complete tool-call batch is emitted, or after a short idle window once a tool call has streamed, so OpenCode can run tools immediately instead of waiting for HopGPT to finish extra narration. If your client parses XML tool calls directly from the text stream instead, see [Appendix B: MCP passthrough mode](#appendix-b-mcp-passthrough-mode).
 
 ### Anthropic SDK
 
@@ -126,6 +126,7 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | `HOPGPT_USER_AGENT`                         | —           | Browser `User-Agent`. Helps satisfy Cloudflare.                                                                      |
 | `HOPGPT_STREAMING_TRANSPORT`                | `fetch`     | `fetch` or `tls`. Switch to `tls` if Cloudflare blocks streaming on native fetch.                                    |
 | `HOPGPT_STREAM_IDLE_PING_DELAY_MS`          | `250`       | Delay before sending an early Anthropic `message_start` while HopGPT is still opening the upstream stream. Use `0` for immediate liveness. |
+| `HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS`           | `750`       | Idle window after a streamed `tool_use` before HoProxy force-closes the Anthropic tool turn. Use `0` to close immediately. |
 | `CONVERSATION_TTL_MS`                       | `21600000`  | In-memory conversation TTL (ms); default 6h.                                                                         |
 | `SIGNATURE_CACHE_TTL_MS`                    | `3600000`   | Tool-signature cache TTL (ms); default 1h.                                                                           |
 | `HOPGPT_TOOL_CALL_BUFFER_SIZE`              | `1000000`   | Max buffer for streaming tool-call detection (bytes).                                                                |
@@ -180,7 +181,7 @@ Need deeper insight? `HOPGPT_DEBUG=true npm start` logs incoming HopGPT events, 
 
 HopGPT uses a two-phase chat protocol. HoProxy POSTs `/api/agents/chat/AnthropicClaude` to get a `{streamId, conversationId, status:"started"}` ack, then GETs `/api/agents/chat/stream/{streamId}` for the SSE event stream. Retry policy splits by phase: POST 401/403/429 fully re-runs the sequence; GET 401/403/429 retries the subscription only (reusing the same `streamId`) to avoid duplicating the user's persisted message on HopGPT's server. No user-visible configuration changes.
 
-The outgoing Anthropic stream keeps strict block shape for SDK clients: `tool_use` block starts include `input: {}` before `input_json_delta` chunks, thinking blocks emit `signature_delta` before `content_block_stop` when HopGPT provides a signature, and tool-use responses end with `stop_reason:"tool_use"` as soon as a complete tool-call batch has been transformed.
+The outgoing Anthropic stream keeps strict block shape for SDK clients: `tool_use` block starts include `input: {}` before `input_json_delta` chunks, thinking blocks emit `signature_delta` before `content_block_stop` when HopGPT provides a signature, and tool-use responses end with `stop_reason:"tool_use"` as soon as a complete tool-call batch has been transformed. If HopGPT streams complete `<invoke>` calls inside an unclosed `<function_calls>` wrapper, HoProxy emits the completed calls incrementally and closes the client stream after `HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS` so clients are not left waiting on stalled wrapper text.
 
 ## Testing
 

@@ -44,8 +44,9 @@ export async function parseSSEStream(response, onEvent) {
  * @returns {Promise<object>} Final transformer state
  */
 export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, options = {}) {
-  const { autoEndOnMessageStop = false } = options;
+  const { autoEndOnMessageStop = false, onToolUseIdle = null, toolUseIdleCloseMs = null } = options;
   let stoppedOnMessageStop = false;
+  let toolUseIdleTimer = null;
   const parser = createParser((event) => {
     if (stoppedOnMessageStop) {
       return;
@@ -61,6 +62,7 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
 
       if (transformedEvents) {
         const events = Array.isArray(transformedEvents) ? transformedEvents : [transformedEvents];
+        let sawToolUse = false;
 
         for (const evt of events) {
           // Check if response is still writable before writing
@@ -75,15 +77,19 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
             });
           }
 
-          res.write(`event: ${evt.event}\n`);
-          res.write(`data: ${JSON.stringify(evt.data)}\n\n`);
-          if (typeof res.flush === 'function') {
-            res.flush();
+          writeEvent(res, evt);
+          if (isToolUseStartEvent(evt)) {
+            sawToolUse = true;
           }
           if (autoEndOnMessageStop && evt.event === 'message_stop') {
+            clearToolUseIdleTimer();
             stoppedOnMessageStop = true;
             return;
           }
+        }
+
+        if (sawToolUse && !stoppedOnMessageStop) {
+          scheduleToolUseIdleClose();
         }
       }
     }
@@ -92,10 +98,56 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
   const reader = fetchResponse.body.getReader();
   const decoder = new TextDecoder();
 
+  function clearToolUseIdleTimer() {
+    if (toolUseIdleTimer) {
+      clearTimeout(toolUseIdleTimer);
+      toolUseIdleTimer = null;
+    }
+  }
+
+  function scheduleToolUseIdleClose() {
+    if (
+      typeof onToolUseIdle !== 'function' ||
+      !Number.isFinite(toolUseIdleCloseMs) ||
+      toolUseIdleCloseMs < 0
+    ) {
+      return;
+    }
+
+    clearToolUseIdleTimer();
+    toolUseIdleTimer = setTimeout(() => {
+      toolUseIdleTimer = null;
+      if (stoppedOnMessageStop || signal?.aborted || res.writableEnded || res.destroyed) {
+        return;
+      }
+
+      const events = onToolUseIdle();
+      const normalizedEvents = Array.isArray(events) ? events : events ? [events] : [];
+      for (const evt of normalizedEvents) {
+        if (res.writableEnded || res.destroyed) {
+          return;
+        }
+        writeEvent(res, evt);
+        if (evt.event === 'message_stop') {
+          stoppedOnMessageStop = true;
+        }
+      }
+
+      if (stoppedOnMessageStop) {
+        reader.cancel().catch((error) => {
+          log.debug('Failed to cancel upstream reader after tool-use idle close', {
+            error: error.message,
+          });
+        });
+      }
+    }, toolUseIdleCloseMs);
+  }
+
   try {
     while (true) {
       // Check if aborted before reading next chunk
       if (signal?.aborted) {
+        clearToolUseIdleTimer();
         await reader.cancel();
         break;
       }
@@ -106,15 +158,29 @@ export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, 
       const chunk = decoder.decode(value, { stream: true });
       parser.feed(chunk);
       if (stoppedOnMessageStop) {
+        clearToolUseIdleTimer();
         await reader.cancel();
         break;
       }
     }
   } finally {
+    clearToolUseIdleTimer();
     reader.releaseLock();
   }
 
   return { stoppedOnMessageStop };
+}
+
+function writeEvent(res, evt) {
+  res.write(`event: ${evt.event}\n`);
+  res.write(`data: ${JSON.stringify(evt.data)}\n\n`);
+  if (typeof res.flush === 'function') {
+    res.flush();
+  }
+}
+
+function isToolUseStartEvent(evt) {
+  return evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use';
 }
 
 /**

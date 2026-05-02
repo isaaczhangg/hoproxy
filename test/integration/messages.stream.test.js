@@ -28,6 +28,28 @@ function makeSSEResponse(body) {
   };
 }
 
+function makeHangingSSEResponse(body) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(body));
+    },
+  });
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    headers: {
+      get: (k) => (k.toLowerCase() === 'content-type' ? 'text/event-stream' : null),
+    },
+    body: stream,
+    text: async () => body,
+    json: async () => {
+      throw new Error('not json');
+    },
+  };
+}
+
 function buildApp() {
   const app = express();
   app.use(express.json());
@@ -38,8 +60,10 @@ function buildApp() {
 describe('POST /v1/messages streaming — end-to-end', () => {
   let getDefaultClientSpy;
   let originalIdlePingDelay;
+  let originalToolBatchIdleClose;
   beforeEach(() => {
     originalIdlePingDelay = process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS;
+    originalToolBatchIdleClose = process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS;
     getDefaultClientSpy = vi.spyOn(hopgptClientModule, 'getDefaultClient');
   });
   afterEach(() => {
@@ -47,6 +71,11 @@ describe('POST /v1/messages streaming — end-to-end', () => {
       delete process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS;
     } else {
       process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS = originalIdlePingDelay;
+    }
+    if (originalToolBatchIdleClose === undefined) {
+      delete process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS;
+    } else {
+      process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS = originalToolBatchIdleClose;
     }
     vi.restoreAllMocks();
   });
@@ -322,6 +351,63 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(res.text).toContain('"stop_reason":"tool_use"');
     expect(res.text).not.toContain('post-tool prose');
     expect(res.text).not.toContain('final text should not leak');
+  });
+
+  it('emits complete invokes from an open function_calls wrapper and closes on tool idle', async () => {
+    const partialFunctionCalls = `<function_calls>
+<invoke name="Read">
+<parameter name="file_path">README.md</parameter>
+</invoke>
+`;
+    const harSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"m1","conversationId":"c1"}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [
+              {
+                type: 'text',
+                text: `Thinking: inspect the README first.\n${partialFunctionCalls}`,
+              },
+            ],
+          },
+        },
+      })}\n\n`;
+
+    process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS = '10';
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: async () => makeHangingSSEResponse(harSSE),
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: 'user', content: 'inspect the repo' }],
+        tools: [
+          {
+            name: 'Read',
+            input_schema: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('"type":"tool_use"');
+    expect(res.text).toContain('"name":"Read"');
+    expect(res.text).toContain('\\"file_path\\":\\"README.md\\"');
+    expect(res.text).toContain('"stop_reason":"tool_use"');
+    expect(res.text).toContain('event: message_stop');
+    expect(res.text).not.toContain('<function_calls>');
   });
 
   it('does not inject continue prompts or stream thinking on tool-result continuations', async () => {

@@ -82,12 +82,16 @@ describe('HopGPTClient', () => {
   let tlsFetchSpy;
   let originalProactiveRefreshBuffer;
   let originalTokenProvider;
+  let originalBunTest;
+  let originalOpenidUserId;
 
   beforeEach(() => {
     // Mock tlsFetch instead of global fetch
     tlsFetchSpy = vi.spyOn(tlsClient, 'tlsFetch');
     originalProactiveRefreshBuffer = process.env.HOPGPT_PROACTIVE_REFRESH_BUFFER_SECONDS;
     originalTokenProvider = process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
+    originalBunTest = process.env.BUN_TEST;
+    originalOpenidUserId = process.env.HOPGPT_COOKIE_OPENID_USER_ID;
     delete process.env.HOPGPT_COOKIE_TOKEN_PROVIDER;
   });
 
@@ -102,6 +106,16 @@ describe('HopGPTClient', () => {
     } else {
       process.env.HOPGPT_COOKIE_TOKEN_PROVIDER = originalTokenProvider;
     }
+    if (originalBunTest === undefined) {
+      delete process.env.BUN_TEST;
+    } else {
+      process.env.BUN_TEST = originalBunTest;
+    }
+    if (originalOpenidUserId === undefined) {
+      delete process.env.HOPGPT_COOKIE_OPENID_USER_ID;
+    } else {
+      process.env.HOPGPT_COOKIE_OPENID_USER_ID = originalOpenidUserId;
+    }
     vi.restoreAllMocks();
   });
 
@@ -114,6 +128,13 @@ describe('HopGPTClient', () => {
 
   describe('refreshTokens() gate', () => {
     it('returns false when openid_user_id is missing', async () => {
+      const client = new HopGPTClient({ openidUserId: null });
+      const result = await client.refreshTokens();
+      expect(result).toBe(false);
+    });
+
+    it('does not fall back to .env when openidUserId is explicitly null', async () => {
+      process.env.HOPGPT_COOKIE_OPENID_USER_ID = 'env-openid-id';
       const client = new HopGPTClient({ openidUserId: null });
       const result = await client.refreshTokens();
       expect(result).toBe(false);
@@ -172,6 +193,22 @@ describe('HopGPTClient', () => {
     it('is disabled under Vitest to avoid overwriting a real .env file', () => {
       const client = new HopGPTClient({ openidUserId: 'id' });
       expect(client.autoPersist).toBe(false);
+    });
+
+    it('is disabled under Bun test to avoid overwriting a real .env file', () => {
+      const originalVitest = process.env.VITEST;
+      delete process.env.VITEST;
+      try {
+        process.env.BUN_TEST = '1';
+        const client = new HopGPTClient({ openidUserId: 'id' });
+        expect(client.autoPersist).toBe(false);
+      } finally {
+        if (originalVitest === undefined) {
+          delete process.env.VITEST;
+        } else {
+          process.env.VITEST = originalVitest;
+        }
+      }
     });
   });
 
