@@ -117,8 +117,9 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | Variable                                    | Default     | Description                                                                                                         |
 | ------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------- |
 | `PORT`                                      | `3001`      | Server port.                                                                                                        |
-| `HOPGPT_COOKIE_OPENID_USER_ID`              | —           | **Required.** OIDC-issued refresh JWT (the `openid_user_id` browser cookie). Used to mint bearer tokens.            |
-| `HOPGPT_BEARER_TOKEN`                       | —           | JWT bearer; auto-minted from `openid_user_id` if missing.                                                            |
+| `HOPGPT_COOKIE_REFRESH_TOKEN`               | —           | **Required.** HopGPT refresh-token cookie. Used to mint bearer tokens after the server session expires.              |
+| `HOPGPT_COOKIE_OPENID_USER_ID`              | —           | OpenID user cookie. Kept with the browser cookie context and rotated on refresh.                                     |
+| `HOPGPT_BEARER_TOKEN`                       | —           | JWT bearer; auto-minted from `refreshToken` if missing.                                                              |
 | `HOPGPT_COOKIE_CONNECT_SID`                 | —           | Express session cookie; rotated on every token refresh.                                                              |
 | `HOPGPT_COOKIE_CF_CLEARANCE`                | —           | Cloudflare clearance cookie.                                                                                         |
 | `HOPGPT_COOKIE_CF_BM`                       | —           | Cloudflare bot management cookie.                                                                                    |
@@ -139,16 +140,17 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 
 Extraction-only: `HOPGPT_PUPPETEER_CHANNEL`, `HOPGPT_PUPPETEER_USER_DATA_DIR`.
 
-With auto-refresh on, the only variable you *must* set is `HOPGPT_COOKIE_OPENID_USER_ID`. Everything else is populated on first request.
+With auto-refresh on, the only variable you *must* set is `HOPGPT_COOKIE_REFRESH_TOKEN`. Everything else is populated on first request.
 
 ### Authentication
 
 HoProxy handles two refresh scopes:
 
 - **Bearer token** (~75 min lifespan). Auto-refreshed before expiry by calling HopGPT's `/api/auth/refresh` with the same empty-body request shape the browser uses; if HopGPT still returns 401/403, HoProxy refreshes once and retries the failed request phase.
-- **`openid_user_id`** (~7-day lifespan). When this expires, run `npm run extract` to re-authenticate.
+- **`refreshToken`** (~7-day lifespan). This is the durable refresh credential HopGPT reads after the Express session expires. When it expires or is missing, run `npm run extract` to re-authenticate.
+- **`openid_user_id`** (~7-day lifespan). This cookie is part of the OpenID browser context and rotates with refreshes, but it is not enough by itself to mint a new bearer token.
 
-During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `connect.sid` session cookie is rotated server-side on every refresh and tracked alongside the credential; Cloudflare cookies are best-effort and may need re-extraction on blocks.
+During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `refreshToken`, `connect.sid`, and `openid_user_id` cookies can rotate server-side on refresh and are tracked together; Cloudflare cookies are best-effort and may need re-extraction on blocks.
 
 ### Conversation state
 
@@ -166,8 +168,8 @@ State expires after `CONVERSATION_TTL_MS` (6h default).
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | Connection refused                              | Proxy isn't running. `npm start`.                                                                                      |
 | `authentication_error` from HoProxy             | Re-run `npm run extract`, then restart the server.                                                                     |
-| Refresh logs show `Refresh token not provided`  | The refresh request is using the wrong provider or stale credentials. Upgrade to a build that defaults `HOPGPT_COOKIE_TOKEN_PROVIDER=openid`, then re-run `npm run extract` if it persists. |
-| 401/403 from HopGPT                             | `openid_user_id` JWT expired (~7-day lifespan). Re-run `npm run extract`.                                              |
+| Refresh logs show `Refresh token not provided`  | `HOPGPT_COOKIE_REFRESH_TOKEN` is missing or stale. Upgrade to this build, re-run `npm run extract`, then restart.        |
+| 401/403 from HopGPT                             | Refresh credentials expired or were rejected. Re-run `npm run extract`.                                                |
 | Cloudflare "Attention Required" page            | CF cookies or UA stale. Re-run `npm run extract` and restart.                                                          |
 | Streaming output arrives all at once            | Try `HOPGPT_STREAMING_TRANSPORT=tls` if Cloudflare is blocking native fetch.                                            |
 | Model warning / not found                       | Use a canonical model from the table above, or hit `GET /v1/models`.                                                   |
@@ -242,11 +244,12 @@ If Puppeteer can't drive a browser on your host, grab the values yourself:
 
 ```bash
 # .env — minimum
-HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
+HOPGPT_COOKIE_REFRESH_TOKEN=...
 
 # recommended (otherwise auto-populated on first request)
 HOPGPT_BEARER_TOKEN=eyJhbGciOiJIUzI1NiIs...
 HOPGPT_COOKIE_CONNECT_SID=s%3A...
+HOPGPT_COOKIE_OPENID_USER_ID=eyJhbGciOiJIUzI1NiIs...
 HOPGPT_COOKIE_CF_CLEARANCE=...
 HOPGPT_COOKIE_CF_BM=...
 HOPGPT_COOKIE_TOKEN_PROVIDER=openid

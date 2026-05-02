@@ -6,8 +6,8 @@ import path from 'path';
 import messagesRouter from './routes/messages.js';
 import modelsRouter from './routes/models.js';
 import refreshTokenRouter from './routes/refreshToken.js';
-import { requestLoggerMiddleware, createLogger } from './utils/logger.js';
 import { getDefaultClient, getTokenExpiryInfo } from './services/hopgptClient.js';
+import { createLogger, requestLoggerMiddleware } from './utils/logger.js';
 
 const log = createLogger('Server');
 
@@ -39,27 +39,42 @@ function logStartupTokenDiagnostics() {
       masked: maskToken(bearerToken),
       isValidJWT: !!bearerInfo,
       expiresIn: bearerInfo ? `${Math.round(bearerInfo.expiresInSeconds / 60)}min` : 'N/A',
-      isExpired: bearerInfo?.isExpired ?? 'unknown'
+      isExpired: bearerInfo?.isExpired ?? 'unknown',
     });
   } else {
     log.warn('Bearer token: NOT SET (will attempt refresh on first request)');
   }
 
+  const refreshToken = client.cookies?.refreshToken;
+  if (refreshToken) {
+    log.info('Refresh token cookie', {
+      present: true,
+      masked: maskToken(refreshToken),
+      length: refreshToken.length,
+    });
+  } else {
+    log.error('Refresh token cookie: NOT SET — automatic refresh will fail (run: npm run extract)');
+  }
+
   const openidId = client.cookies?.openid_user_id;
   const openidInfo = getTokenExpiryInfo(openidId);
   if (openidId) {
-    log.info('Refresh credential (openid_user_id)', {
+    log.info('OpenID user cookie (openid_user_id)', {
       present: true,
       masked: maskToken(openidId),
       isValidJWT: !!openidInfo,
       expiresIn: openidInfo ? `${Math.round(openidInfo.expiresInSeconds / 3600)}h` : 'N/A',
-      isExpired: openidInfo?.isExpired ?? 'unknown'
+      isExpired: openidInfo?.isExpired ?? 'unknown',
     });
     if (openidInfo?.isExpired) {
-      log.error('Refresh credential is EXPIRED — re-authentication required (run: npm run extract)');
+      log.warn(
+        'OpenID user cookie is expired — re-authentication may be required (run: npm run extract)',
+      );
     }
   } else {
-    log.error('Refresh credential (openid_user_id): NOT SET — auth will fail (run: npm run extract)');
+    log.warn(
+      'OpenID user cookie (openid_user_id): NOT SET — cookie context may be incomplete (run: npm run extract)',
+    );
   }
 
   const sid = client.cookies?.connect_sid;
@@ -67,7 +82,7 @@ function logStartupTokenDiagnostics() {
     log.info('Session cookie (connect.sid)', {
       present: true,
       masked: maskToken(sid),
-      length: sid.length
+      length: sid.length,
     });
   } else {
     log.warn('Session cookie (connect.sid): NOT SET — auth may be rejected (run: npm run extract)');
@@ -76,13 +91,20 @@ function logStartupTokenDiagnostics() {
   try {
     if (fs.existsSync(envPath)) {
       const envContent = fs.readFileSync(envPath, 'utf-8');
+      const envRefreshMatch = envContent.match(/^HOPGPT_COOKIE_REFRESH_TOKEN=(.+)$/m);
+      const envRefreshToken = envRefreshMatch ? envRefreshMatch[1].trim() : null;
       const envOpenidMatch = envContent.match(/^HOPGPT_COOKIE_OPENID_USER_ID=(.+)$/m);
       const envOpenidId = envOpenidMatch ? envOpenidMatch[1].trim() : null;
       const envSidMatch = envContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m);
       const envSid = envSidMatch ? envSidMatch[1].trim() : null;
 
+      if (envRefreshToken && refreshToken && envRefreshToken !== refreshToken) {
+        log.debug('.env refresh token differs from memory — will be reconciled on next refresh');
+      }
       if (envOpenidId && openidId && envOpenidId !== openidId) {
-        log.debug('.env refresh credential differs from memory — will be reconciled on next refresh');
+        log.debug(
+          '.env OpenID user cookie differs from memory — will be reconciled on next refresh',
+        );
       }
       if (envSid && sid && envSid !== sid) {
         log.debug('.env session cookie differs from memory — will be reconciled on next refresh');
@@ -98,7 +120,7 @@ function logStartupTokenDiagnostics() {
     log.warn('Cloudflare cookies missing', {
       cf_clearance: cfClearance ? 'set' : 'NOT SET',
       __cf_bm: cfBm ? 'set' : 'NOT SET',
-      note: 'This may cause Cloudflare blocks, but TLS fingerprinting should help bypass'
+      note: 'This may cause Cloudflare blocks, but TLS fingerprinting should help bypass',
     });
   }
 
@@ -115,7 +137,10 @@ app.use(express.json({ limit: '10mb' }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, anthropic-version, x-session-id, x-sessionid, x-conversation-reset, x-mcp-passthrough');
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization, x-api-key, anthropic-version, x-session-id, x-sessionid, x-conversation-reset, x-mcp-passthrough',
+  );
   res.header('Access-Control-Expose-Headers', 'x-session-id');
 
   if (req.method === 'OPTIONS') {
@@ -143,8 +168,8 @@ app.use((req, res) => {
     type: 'error',
     error: {
       type: 'not_found_error',
-      message: `Not found: ${req.method} ${req.path}`
-    }
+      message: `Not found: ${req.method} ${req.path}`,
+    },
   });
 });
 
@@ -153,24 +178,24 @@ app.use((err, req, res, next) => {
   log.error('Unhandled error', {
     requestId: req.id,
     error: err.message,
-    stack: process.env.HOPGPT_DEBUG === 'true' ? err.stack : undefined
+    stack: process.env.HOPGPT_DEBUG === 'true' ? err.stack : undefined,
   });
   res.status(500).json({
     type: 'error',
     error: {
       type: 'api_error',
-      message: 'Internal server error'
-    }
+      message: 'Internal server error',
+    },
   });
 });
 
 // Start server
 app.listen(PORT, () => {
   log.info(`Server started on port ${PORT}`);
-  
+
   // Log token diagnostics on startup
   logStartupTokenDiagnostics();
-  
+
   console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║          HopGPT Anthropic API Proxy                        ║

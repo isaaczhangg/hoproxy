@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { getDefaultClient, getTokenExpiryInfo } from '../services/hopgptClient.js';
 import {
   AuthError,
+  CloudflareBlockedError,
+  NetworkError,
   RefreshTokenExpiredError,
   TokenRefreshError,
-  CloudflareBlockedError,
-  NetworkError
 } from '../errors/authErrors.js';
+import { getDefaultClient, getTokenExpiryInfo } from '../services/hopgptClient.js';
 import { loggers } from '../utils/logger.js';
 
 const log = loggers.auth;
@@ -33,29 +33,42 @@ router.get('/token-status', (req, res) => {
 
   const bearerTokenInfo = getTokenExpiryInfo(client.bearerToken);
   const openidInfo = getTokenExpiryInfo(client.cookies?.openid_user_id);
+  const refreshTokenPresent = !!client.cookies?.refreshToken;
 
   const status = {
-    bearerToken: bearerTokenInfo ? {
-      ...bearerTokenInfo,
-      present: true
-    } : {
-      present: !!client.bearerToken,
-      isExpired: null,
-      note: client.bearerToken ? 'Token is not a decodable JWT' : 'No bearer token configured'
+    bearerToken: bearerTokenInfo
+      ? {
+          ...bearerTokenInfo,
+          present: true,
+        }
+      : {
+          present: !!client.bearerToken,
+          isExpired: null,
+          note: client.bearerToken ? 'Token is not a decodable JWT' : 'No bearer token configured',
+        },
+    refreshCredential: {
+      present: refreshTokenPresent,
+      note: refreshTokenPresent
+        ? 'refreshToken cookie configured'
+        : 'No refreshToken cookie configured',
     },
-    refreshCredential: openidInfo ? {
-      ...openidInfo,
-      present: true
-    } : {
-      present: !!client.cookies?.openid_user_id,
-      isExpired: null,
-      note: client.cookies?.openid_user_id ? 'openid_user_id is not a decodable JWT' : 'No refresh credential configured'
-    },
+    openidUser: openidInfo
+      ? {
+          ...openidInfo,
+          present: true,
+        }
+      : {
+          present: !!client.cookies?.openid_user_id,
+          isExpired: null,
+          note: client.cookies?.openid_user_id
+            ? 'openid_user_id is not a decodable JWT'
+            : 'No openid_user_id cookie configured',
+        },
     session: {
-      present: !!client.cookies?.connect_sid
+      present: !!client.cookies?.connect_sid,
     },
     autoRefresh: client.autoRefresh,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   };
 
   res.json(status);
@@ -69,13 +82,13 @@ router.post('/refresh-token', async (req, res) => {
   const client = getDefaultClient();
   log.info('Manual token refresh requested');
 
-  if (!client.cookies?.openid_user_id) {
+  if (!client.cookies?.refreshToken) {
     log.warn('Token refresh failed: no refresh credential configured');
     return res.status(400).json({
       success: false,
       error: {
-        message: 'Missing refresh credential (HOPGPT_COOKIE_OPENID_USER_ID). Run: npm run extract'
-      }
+        message: 'Missing refresh credential (HOPGPT_COOKIE_REFRESH_TOKEN). Run: npm run extract',
+      },
     });
   }
 
@@ -85,7 +98,9 @@ router.post('/refresh-token', async (req, res) => {
 
     if (refreshed) {
       log.info('Token refresh successful', {
-        expiresIn: tokenExpiry?.expiresInSeconds ? `${Math.floor(tokenExpiry.expiresInSeconds / 60)}m` : 'unknown'
+        expiresIn: tokenExpiry?.expiresInSeconds
+          ? `${Math.floor(tokenExpiry.expiresInSeconds / 60)}m`
+          : 'unknown',
       });
     } else {
       log.error('Token refresh failed');
@@ -93,7 +108,7 @@ router.post('/refresh-token', async (req, res) => {
 
     return res.status(refreshed ? 200 : 502).json({
       success: refreshed,
-      tokenExpiry: tokenExpiry || undefined
+      tokenExpiry: tokenExpiry || undefined,
     });
   } catch (error) {
     if (error instanceof AuthError) {
@@ -103,8 +118,8 @@ router.post('/refresh-token', async (req, res) => {
         success: false,
         error: {
           type: errorType,
-          message: error.message
-        }
+          message: error.message,
+        },
       });
     }
 
@@ -113,8 +128,8 @@ router.post('/refresh-token', async (req, res) => {
       success: false,
       error: {
         type: 'api_error',
-        message: error.message || 'Token refresh failed'
-      }
+        message: error.message || 'Token refresh failed',
+      },
     });
   }
 });
@@ -133,12 +148,14 @@ router.get('/token-debug', (req, res) => {
 
   const memoryBearerToken = client.bearerToken;
   const memorySid = client.cookies?.connect_sid;
+  const memoryRefreshToken = client.cookies?.refreshToken;
   const memoryOpenidId = client.cookies?.openid_user_id;
   const memoryBearerInfo = getTokenExpiryInfo(memoryBearerToken);
   const memoryOpenidInfo = getTokenExpiryInfo(memoryOpenidId);
 
   let envBearerToken = null;
   let envSid = null;
+  let envRefreshToken = null;
   let envOpenidId = null;
   let envReadError = null;
 
@@ -147,9 +164,11 @@ router.get('/token-debug', (req, res) => {
       const envContent = fs.readFileSync(envPath, 'utf-8');
       const bearerMatch = envContent.match(/^HOPGPT_BEARER_TOKEN=(.+)$/m);
       const sidMatch = envContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m);
+      const refreshMatch = envContent.match(/^HOPGPT_COOKIE_REFRESH_TOKEN=(.+)$/m);
       const openidMatch = envContent.match(/^HOPGPT_COOKIE_OPENID_USER_ID=(.+)$/m);
       envBearerToken = bearerMatch ? bearerMatch[1].trim() : null;
       envSid = sidMatch ? sidMatch[1].trim() : null;
+      envRefreshToken = refreshMatch ? refreshMatch[1].trim() : null;
       envOpenidId = openidMatch ? openidMatch[1].trim() : null;
     }
   } catch (err) {
@@ -167,22 +186,31 @@ router.get('/token-debug', (req, res) => {
         masked: maskToken(memoryBearerToken),
         length: memoryBearerToken?.length || 0,
         isValidJWT: !!memoryBearerInfo,
-        expiresIn: memoryBearerInfo ? `${Math.round(memoryBearerInfo.expiresInSeconds / 60)}min` : null,
-        isExpired: memoryBearerInfo?.isExpired ?? null
+        expiresIn: memoryBearerInfo
+          ? `${Math.round(memoryBearerInfo.expiresInSeconds / 60)}min`
+          : null,
+        isExpired: memoryBearerInfo?.isExpired ?? null,
       },
       refreshCredential: {
+        present: !!memoryRefreshToken,
+        masked: maskToken(memoryRefreshToken),
+        length: memoryRefreshToken?.length || 0,
+      },
+      openidUser: {
         present: !!memoryOpenidId,
         masked: maskToken(memoryOpenidId),
         length: memoryOpenidId?.length || 0,
         isValidJWT: !!memoryOpenidInfo,
-        expiresIn: memoryOpenidInfo ? `${Math.round(memoryOpenidInfo.expiresInSeconds / 3600)}h` : null,
-        isExpired: memoryOpenidInfo?.isExpired ?? null
+        expiresIn: memoryOpenidInfo
+          ? `${Math.round(memoryOpenidInfo.expiresInSeconds / 3600)}h`
+          : null,
+        isExpired: memoryOpenidInfo?.isExpired ?? null,
       },
       session: {
         present: !!memorySid,
         masked: maskToken(memorySid),
-        length: memorySid?.length || 0
-      }
+        length: memorySid?.length || 0,
+      },
     },
     envFile: {
       path: envPath,
@@ -192,50 +220,76 @@ router.get('/token-debug', (req, res) => {
         masked: maskToken(envBearerToken),
         length: envBearerToken?.length || 0,
         isValidJWT: !!envBearerInfo,
-        matchesMemory: envBearerToken === memoryBearerToken
+        matchesMemory: envBearerToken === memoryBearerToken,
       },
       refreshCredential: {
+        present: !!envRefreshToken,
+        masked: maskToken(envRefreshToken),
+        length: envRefreshToken?.length || 0,
+        matchesMemory: envRefreshToken === memoryRefreshToken,
+      },
+      openidUser: {
         present: !!envOpenidId,
         masked: maskToken(envOpenidId),
         length: envOpenidId?.length || 0,
         isValidJWT: !!envOpenidInfo,
-        matchesMemory: envOpenidId === memoryOpenidId
+        matchesMemory: envOpenidId === memoryOpenidId,
       },
       session: {
         present: !!envSid,
         masked: maskToken(envSid),
         length: envSid?.length || 0,
-        matchesMemory: envSid === memorySid
-      }
+        matchesMemory: envSid === memorySid,
+      },
     },
     cloudflare: {
       cf_clearance: client.cookies?.cf_clearance ? 'set' : 'NOT SET',
-      __cf_bm: client.cookies?.__cf_bm ? 'set' : 'NOT SET'
+      __cf_bm: client.cookies?.__cf_bm ? 'set' : 'NOT SET',
     },
     config: {
       autoRefresh: client.autoRefresh,
       autoPersist: client.autoPersist,
-      proactiveRefreshBufferSec: client.proactiveRefreshBufferSec
+      proactiveRefreshBufferSec: client.proactiveRefreshBufferSec,
     },
-    diagnosis: []
+    diagnosis: [],
   };
 
+  if (!memoryRefreshToken) {
+    debug.diagnosis.push(
+      'CRITICAL: No refresh credential (refreshToken) in memory — run: npm run extract',
+    );
+  }
+
   if (!memoryOpenidId) {
-    debug.diagnosis.push('CRITICAL: No refresh credential (openid_user_id) in memory — run: npm run extract');
+    debug.diagnosis.push(
+      'WARNING: No openid_user_id in memory; OpenID cookie context may be incomplete',
+    );
   } else if (memoryOpenidInfo?.isExpired) {
-    debug.diagnosis.push('CRITICAL: Refresh credential (openid_user_id) is expired — run: npm run extract');
+    debug.diagnosis.push('WARNING: openid_user_id is expired — run: npm run extract if auth fails');
   }
 
   if (!memorySid) {
-    debug.diagnosis.push('WARNING: No session cookie (connect.sid) in memory; auth may be rejected');
+    debug.diagnosis.push(
+      'WARNING: No session cookie (connect.sid) in memory; auth may be rejected',
+    );
+  }
+
+  if (envRefreshToken && memoryRefreshToken && envRefreshToken !== memoryRefreshToken) {
+    debug.diagnosis.push(
+      'INFO: .env refresh token differs from memory — may have been rotated; next refresh will re-persist',
+    );
   }
 
   if (envOpenidId && memoryOpenidId && envOpenidId !== memoryOpenidId) {
-    debug.diagnosis.push('INFO: .env refresh credential differs from memory — may have been rotated; next refresh will re-persist');
+    debug.diagnosis.push(
+      'INFO: .env openid_user_id differs from memory — may have been rotated; next refresh will re-persist',
+    );
   }
 
-  if (!envOpenidId && memoryOpenidId) {
-    debug.diagnosis.push('WARNING: Refresh credential in memory but not in .env — persistence may have failed');
+  if (!envRefreshToken && memoryRefreshToken) {
+    debug.diagnosis.push(
+      'WARNING: Refresh token in memory but not in .env — persistence may have failed',
+    );
   }
 
   if (debug.diagnosis.length === 0) {

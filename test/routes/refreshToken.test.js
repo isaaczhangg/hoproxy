@@ -1,15 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CloudflareBlockedError, RefreshTokenExpiredError } from '../../src/errors/authErrors.js';
 import refreshTokenRouter from '../../src/routes/refreshToken.js';
 import { getDefaultClient } from '../../src/services/hopgptClient.js';
-import { RefreshTokenExpiredError, CloudflareBlockedError } from '../../src/errors/authErrors.js';
 
 vi.mock('../../src/services/hopgptClient.js', async () => {
   const actual = await vi.importActual('../../src/services/hopgptClient.js');
   return {
     ...actual,
-    getDefaultClient: vi.fn()
+    getDefaultClient: vi.fn(),
   };
 });
 
@@ -26,8 +26,12 @@ describe('refresh-token route', () => {
 
   it('returns authentication_error when refresh token expired', async () => {
     const mockClient = {
-      cookies: { connect_sid: 'session-id', openid_user_id: 'openid-id' },
-      refreshTokens: vi.fn()
+      cookies: {
+        connect_sid: 'session-id',
+        refreshToken: 'refresh-token',
+        openid_user_id: 'openid-id',
+      },
+      refreshTokens: vi.fn(),
     };
     mockClient.refreshTokens.mockRejectedValue(new RefreshTokenExpiredError());
     getDefaultClient.mockReturnValue(mockClient);
@@ -42,8 +46,12 @@ describe('refresh-token route', () => {
 
   it('returns api_error when Cloudflare blocks refresh', async () => {
     const mockClient = {
-      cookies: { connect_sid: 'session-id', openid_user_id: 'openid-id' },
-      refreshTokens: vi.fn()
+      cookies: {
+        connect_sid: 'session-id',
+        refreshToken: 'refresh-token',
+        openid_user_id: 'openid-id',
+      },
+      refreshTokens: vi.fn(),
     };
     mockClient.refreshTokens.mockRejectedValue(new CloudflareBlockedError());
     getDefaultClient.mockReturnValue(mockClient);
@@ -62,11 +70,11 @@ describe('GET /token-status', () => {
     getDefaultClient.mockReset();
   });
 
-  it('returns new shape with bearerToken + refreshCredential + session and no refreshToken field', async () => {
+  it('returns bearerToken, refreshCredential, openidUser, and session state', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: 'bearer',
-      cookies: { connect_sid: 'sid', openid_user_id: 'oid' },
-      autoRefresh: true
+      cookies: { connect_sid: 'sid', refreshToken: 'refresh-token', openid_user_id: 'oid' },
+      autoRefresh: true,
     });
 
     const app = createApp();
@@ -76,22 +84,24 @@ describe('GET /token-status', () => {
     expect(res.body).toHaveProperty('bearerToken');
     expect(res.body).toHaveProperty('refreshCredential');
     expect(res.body.refreshCredential.present).toBe(true);
+    expect(res.body).toHaveProperty('openidUser');
+    expect(res.body.openidUser.present).toBe(true);
     expect(res.body).toHaveProperty('session');
     expect(res.body.session).toEqual({ present: true });
-    expect(res.body).not.toHaveProperty('refreshToken');
   });
 
-  it('refreshCredential.present is false when openid_user_id is unset', async () => {
+  it('refreshCredential.present is false when refreshToken is unset', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: null,
       cookies: {},
-      autoRefresh: true
+      autoRefresh: true,
     });
 
     const app = createApp();
     const res = await request(app).get('/token-status');
 
     expect(res.body.refreshCredential.present).toBe(false);
+    expect(res.body.openidUser.present).toBe(false);
     expect(res.body.session).toEqual({ present: false });
   });
 });
@@ -101,16 +111,16 @@ describe('POST /refresh-token — missing refresh credential', () => {
     getDefaultClient.mockReset();
   });
 
-  it('returns 400 with HOPGPT_COOKIE_OPENID_USER_ID hint when openid_user_id missing', async () => {
+  it('returns 400 with HOPGPT_COOKIE_REFRESH_TOKEN hint when refreshToken is missing', async () => {
     getDefaultClient.mockReturnValue({
       cookies: {},
-      refreshTokens: vi.fn()
+      refreshTokens: vi.fn(),
     });
 
     const app = createApp();
     const res = await request(app).post('/refresh-token');
 
     expect(res.status).toBe(400);
-    expect(res.body.error.message).toContain('HOPGPT_COOKIE_OPENID_USER_ID');
+    expect(res.body.error.message).toContain('HOPGPT_COOKIE_REFRESH_TOKEN');
   });
 });

@@ -149,6 +149,7 @@ export async function extractCredentials(options = {}) {
       userAgent,
       cookies: {
         connect_sid: findCookie(cookies, 'connect.sid'),
+        refreshToken: findCookie(cookies, 'refreshToken'),
         openid_user_id: findCookie(cookies, 'openid_user_id'),
         cf_clearance: findCookie(cookies, 'cf_clearance'),
         __cf_bm: findCookie(cookies, '__cf_bm'),
@@ -196,8 +197,15 @@ export async function extractCredentials(options = {}) {
       }
 
       throw new Error(
-        `Logged in but openid_user_id cookie (the refresh credential) was not set. ` +
+        `Logged in but openid_user_id cookie was not set. ` +
           `See diagnostic above for visible cookies. ` +
+          `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`,
+      );
+    }
+    if (!credentials.cookies.refreshToken) {
+      throw new Error(
+        `Logged in but refreshToken cookie was not set. ` +
+          `Automatic refresh needs this cookie after the HopGPT session expires. ` +
           `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`,
       );
     }
@@ -206,6 +214,7 @@ export async function extractCredentials(options = {}) {
     writeEnvFile(envPath, envContent);
 
     console.log('\nExtracted:');
+    console.log(`  refreshToken:   ${credentials.cookies.refreshToken ? 'yes' : 'no'}`);
     console.log(`  openid_user_id: ${credentials.cookies.openid_user_id ? 'yes' : 'no'}`);
     console.log(`  connect.sid:    ${credentials.cookies.connect_sid ? 'yes' : 'no'}`);
     console.log(`  cf_clearance:   ${credentials.cookies.cf_clearance ? 'yes' : 'no'}`);
@@ -287,6 +296,9 @@ export function generateEnvContent(credentials) {
   if (credentials.cookies.openid_user_id) {
     lines.push(`HOPGPT_COOKIE_OPENID_USER_ID=${credentials.cookies.openid_user_id}`);
   }
+  if (credentials.cookies.refreshToken) {
+    lines.push(`HOPGPT_COOKIE_REFRESH_TOKEN=${credentials.cookies.refreshToken}`);
+  }
   if (credentials.cookies.connect_sid) {
     lines.push(`HOPGPT_COOKIE_CONNECT_SID=${credentials.cookies.connect_sid}`);
   }
@@ -306,7 +318,7 @@ export function generateEnvContent(credentials) {
 
 /**
  * Write or update .env file, preserving non-HopGPT variables.
- * Also strips any stale HOPGPT_COOKIE_REFRESH_TOKEN line from prior versions.
+ * Rewrites HopGPT credential variables while preserving unrelated config.
  */
 export function writeEnvFile(envPath, newContent) {
   const preservedLines = [];
@@ -321,7 +333,7 @@ export function writeEnvFile(envPath, newContent) {
       'HOPGPT_COOKIE_CONNECT_SID',
       'HOPGPT_COOKIE_OPENID_USER_ID',
       'HOPGPT_COOKIE_CF_BM',
-      'HOPGPT_COOKIE_REFRESH_TOKEN', // strip on rewrite
+      'HOPGPT_COOKIE_REFRESH_TOKEN',
       'HOPGPT_COOKIE_TOKEN_PROVIDER',
     ];
 
