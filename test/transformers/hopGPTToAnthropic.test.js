@@ -1116,7 +1116,7 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(toolStarts[1].data.content_block.name).toBe('Read');
 
     const messageStop = events.find((evt) => evt.event === 'message_stop');
-    expect(messageStop).toBeTruthy();
+    expect(messageStop).toBeUndefined();
 
     const response = transformer.buildNonStreamingResponse();
     const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
@@ -1150,7 +1150,7 @@ describe('hopGPTToAnthropic transformer', () => {
         },
       }),
     });
-    expect(toolEvents?.some((evt) => evt.event === 'message_stop')).toBe(true);
+    expect(toolEvents?.some((evt) => evt.event === 'message_stop')).toBe(false);
 
     const lateFinalResult = transformer.transformEvent({
       event: 'message',
@@ -1166,11 +1166,64 @@ describe('hopGPTToAnthropic transformer', () => {
       }),
     });
 
-    expect(lateFinalResult).toBeNull();
+    expect(lateFinalResult?.some((evt) => evt.event === 'message_stop')).toBe(true);
     expect(transformer.buildNonStreamingResponse().usage).toEqual({
       input_tokens: 12,
       output_tokens: 7,
     });
+  });
+
+  it('emits adjacent native tool_use blocks from final content before stopping', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
+      thinkingEnabled: false,
+      stopOnToolUse: true,
+    });
+
+    const result = transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        final: true,
+        responseMessage: {
+          messageId: 'msg-final',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_read',
+              name: 'Read',
+              input: { file_path: 'README.md' },
+            },
+            {
+              type: 'tool_use',
+              id: 'toolu_package',
+              name: 'Read',
+              input: { file_path: 'package.json' },
+            },
+            { type: 'text', text: 'This should not be emitted after tool use.' },
+          ],
+        },
+      }),
+    });
+    const events = Array.isArray(result) ? result : [];
+
+    const toolStarts = events.filter(
+      (evt) => evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use',
+    );
+    expect(toolStarts).toHaveLength(2);
+    expect(toolStarts[0].data.content_block.id).toBe('toolu_read');
+    expect(toolStarts[1].data.content_block.id).toBe('toolu_package');
+    expect(events).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            delta: expect.objectContaining({ text: expect.stringContaining('not be emitted') }),
+          }),
+        }),
+      ]),
+    );
+
+    const response = transformer.buildNonStreamingResponse();
+    const toolUseBlocks = response.content.filter((block) => block.type === 'tool_use');
+    expect(toolUseBlocks).toHaveLength(2);
   });
 
   it('extracts standalone invoke blocks from text and emits tool_use', () => {
