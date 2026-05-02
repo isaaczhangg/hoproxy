@@ -1664,6 +1664,7 @@ export class HopGPTToAnthropicTransformer {
 
     // Thinking support
     this.thinkingEnabled = options.thinkingEnabled ?? isThinkingModel(model);
+    this.suppressThinking = options.suppressThinking ?? false;
     this.currentBlockIndex = -1; // Will be incremented when blocks start
     this.currentBlockType = null; // 'thinking', 'text', or 'tool_use'
     this.blockStarted = false; // Track if current block has started
@@ -2012,6 +2013,14 @@ export class HopGPTToAnthropicTransformer {
         return events.length > 0 ? events : null;
       }
 
+      if (this.suppressThinking) {
+        if (signature) {
+          this.thinkingSignature = signature;
+          cacheThinkingSignature(this.thinkingSignature, 'claude');
+        }
+        return events.length > 0 ? events : null;
+      }
+
       events.push(...this._emitThinkingDelta(thinkingText, signature));
       return events;
     }
@@ -2020,7 +2029,9 @@ export class HopGPTToAnthropicTransformer {
     if (block.type === 'text' && block.text) {
       events.push(
         ...this._processTextBlock(block.text, {
-          routeTextToThinking: isIndexlessToolCallText && !this.mcpPassthrough,
+          routeTextToThinking:
+            isIndexlessToolCallText && !this.mcpPassthrough && !this.suppressThinking,
+          suppressTextBeforeToolUse: isIndexlessToolCallText && this.suppressThinking,
           suppressTextAfterToolUse: isIndexlessToolCallText,
         }),
       );
@@ -2049,6 +2060,9 @@ export class HopGPTToAnthropicTransformer {
       }
       const isThoughtBlock = block.type === 'thinking' || block.thought === true;
       if (isThoughtBlock) {
+        if (this.suppressThinking) {
+          continue;
+        }
         const signature = block.signature || block.thoughtSignature || null;
         if (signature) {
           cacheThinkingSignature(signature, 'claude');
@@ -2082,11 +2096,16 @@ export class HopGPTToAnthropicTransformer {
 
         const sanitizedText = sanitizeTextFull(block.text || '');
         const segments = splitMcpToolCalls(sanitizedText, true);
+        const suppressToolPreamble =
+          this.suppressThinking && segments.some((segment) => segment.type === 'tool_call');
         for (const segment of segments) {
           if (stopAfterTool) {
             break;
           }
           if (segment.type === 'text') {
+            if (suppressToolPreamble) {
+              continue;
+            }
             if (!segment.text) continue;
             const lastBlock = this.contentBlocks[this.contentBlocks.length - 1];
             if (
@@ -2163,6 +2182,9 @@ export class HopGPTToAnthropicTransformer {
       const isThoughtBlock =
         (block.type === 'thinking' && block.thinking) || block.thought === true;
       if (isThoughtBlock) {
+        if (this.suppressThinking) {
+          continue;
+        }
         const blockEvents = this._processContentBlock(block);
         if (blockEvents) {
           events.push(...blockEvents);
@@ -2181,11 +2203,16 @@ export class HopGPTToAnthropicTransformer {
 
         const sanitizedText = sanitizeTextFull(block.text || '');
         const segments = splitMcpToolCalls(sanitizedText, true);
+        const suppressToolPreamble =
+          this.suppressThinking && segments.some((segment) => segment.type === 'tool_call');
         for (const segment of segments) {
           if (stopAfterTool) {
             break;
           }
           if (segment.type === 'text') {
+            if (suppressToolPreamble) {
+              continue;
+            }
             if (segment.text) {
               events.push(...this._emitTextDelta(segment.text));
             }
@@ -2264,7 +2291,11 @@ export class HopGPTToAnthropicTransformer {
   }
 
   _processTextBlock(text, options = {}) {
-    const { routeTextToThinking = false, suppressTextAfterToolUse = false } = options;
+    const {
+      routeTextToThinking = false,
+      suppressTextBeforeToolUse = false,
+      suppressTextAfterToolUse = false,
+    } = options;
     const events = [];
     let sanitizedText = this._sanitizeTextChunk(text);
     const shouldFlushForToolParsing =
@@ -2341,6 +2372,9 @@ export class HopGPTToAnthropicTransformer {
           if (!sawToolCall && segment.text.trim().length > 0) {
             events.push(...this._emitThinkingDelta(segment.text));
           }
+          continue;
+        }
+        if (suppressTextBeforeToolUse && !sawToolCall) {
           continue;
         }
         if (suppressTextAfterToolUse && sawToolCall) {
@@ -3003,7 +3037,7 @@ export class HopGPTToAnthropicTransformer {
       content = this.contentBlocks;
     } else {
       // Fall back to accumulated content
-      if (this.accumulatedThinking) {
+      if (this.accumulatedThinking && !this.suppressThinking) {
         const thinkingBlock = {
           type: 'thinking',
           thinking: this.accumulatedThinking,

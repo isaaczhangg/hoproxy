@@ -1,35 +1,30 @@
-import { Router } from "express";
+import { Router } from 'express';
 import {
-	AuthError,
-	CloudflareBlockedError,
-	NetworkError,
-	RefreshTokenExpiredError,
-	TokenRefreshError,
-} from "../errors/authErrors.js";
+  AuthError,
+  CloudflareBlockedError,
+  NetworkError,
+  RefreshTokenExpiredError,
+  TokenRefreshError,
+} from '../errors/authErrors.js';
 import {
-	getConversationState,
-	resetConversationState,
-	resolveSessionId,
-	shouldResetConversation,
-	updateConversationState,
-} from "../services/conversationStore.js";
-import { getDefaultClient, HopGPTError } from "../services/hopgptClient.js";
+  getConversationState,
+  resetConversationState,
+  resolveSessionId,
+  shouldResetConversation,
+  updateConversationState,
+} from '../services/conversationStore.js';
+import { getDefaultClient, HopGPTError } from '../services/hopgptClient.js';
 import {
-	extractThinkingConfig,
-	getToolChoiceConfig,
-	normalizeSystemPrompt,
-	transformAnthropicToHopGPT,
-} from "../transformers/anthropicToHopGPT.js";
-import {
-	formatSSEEvent,
-	HopGPTToAnthropicTransformer,
-} from "../transformers/hopGPTToAnthropic.js";
-import { loggers } from "../utils/logger.js";
-import {
-	resolveModelMapping,
-	stripProviderPrefix,
-} from "../utils/modelMapping.js";
-import { parseSSEStream, pipeSSEStream } from "../utils/sseParser.js";
+  extractThinkingConfig,
+  getToolChoiceConfig,
+  normalizeSystemPrompt,
+  transformAnthropicToHopGPT,
+} from '../transformers/anthropicToHopGPT.js';
+import { formatSSEEvent, HopGPTToAnthropicTransformer } from '../transformers/hopGPTToAnthropic.js';
+import { analyzeConversationState } from '../transformers/thinkingUtils.js';
+import { loggers } from '../utils/logger.js';
+import { resolveModelMapping, stripProviderPrefix } from '../utils/modelMapping.js';
+import { parseSSEStream, pipeSSEStream } from '../utils/sseParser.js';
 
 const log = loggers.messages;
 const router = Router();
@@ -39,526 +34,470 @@ const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 1000;
  * POST /v1/messages/count_tokens
  * Anthropic Messages API token count endpoint (not implemented)
  */
-router.post("/messages/count_tokens", (req, res) => {
-	res.status(501).json({
-		type: "error",
-		error: {
-			type: "not_implemented",
-			message:
-				"Token counting is not implemented. Use /v1/messages and configure your client to skip token counting.",
-		},
-	});
+router.post('/messages/count_tokens', (req, res) => {
+  res.status(501).json({
+    type: 'error',
+    error: {
+      type: 'not_implemented',
+      message:
+        'Token counting is not implemented. Use /v1/messages and configure your client to skip token counting.',
+    },
+  });
 });
 
 /**
  * POST /v1/messages
  * Anthropic Messages API compatible endpoint
  */
-router.post("/messages", async (req, res) => {
-	try {
-		const anthropicRequest = req.body;
+router.post('/messages', async (req, res) => {
+  try {
+    const anthropicRequest = req.body;
 
-		// Validate request
-		const validationError = validateRequest(anthropicRequest);
-		if (validationError) {
-			return res.status(400).json({
-				type: "error",
-				error: {
-					type: "invalid_request_error",
-					message: validationError,
-				},
-			});
-		}
+    // Validate request
+    const validationError = validateRequest(anthropicRequest);
+    if (validationError) {
+      return res.status(400).json({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: validationError,
+        },
+      });
+    }
 
-		// Get HopGPT client
-		const client = getDefaultClient();
+    // Get HopGPT client
+    const client = getDefaultClient();
 
-		// Validate authentication
-		const authValidation = client.validateAuth();
-		if (!authValidation.valid) {
-			return res.status(401).json({
-				type: "error",
-				error: {
-					type: "authentication_error",
-					message: `Missing authentication configuration: ${authValidation.missing.join(", ")}`,
-				},
-			});
-		}
+    // Validate authentication
+    const authValidation = client.validateAuth();
+    if (!authValidation.valid) {
+      return res.status(401).json({
+        type: 'error',
+        error: {
+          type: 'authentication_error',
+          message: `Missing authentication configuration: ${authValidation.missing.join(', ')}`,
+        },
+      });
+    }
 
-		// Log any warnings
-		if (authValidation.warnings?.length > 0) {
-			authValidation.warnings.forEach((warning) => log.warn(warning));
-		}
+    // Log any warnings
+    if (authValidation.warnings?.length > 0) {
+      authValidation.warnings.forEach((warning) => log.warn(warning));
+    }
 
-		// Resolve model mapping for HopGPT and response model names
-		const requestedModel = anthropicRequest.model;
-		const strippedModel = stripProviderPrefix(requestedModel);
-		const modelMapping = resolveModelMapping(strippedModel);
-		if (!modelMapping.mapped && anthropicRequest.model) {
-			log.warn(`Unmapped model "${anthropicRequest.model}", using as-is`);
-		}
+    // Resolve model mapping for HopGPT and response model names
+    const requestedModel = anthropicRequest.model;
+    const strippedModel = stripProviderPrefix(requestedModel);
+    const modelMapping = resolveModelMapping(strippedModel);
+    if (!modelMapping.mapped && anthropicRequest.model) {
+      log.warn(`Unmapped model "${anthropicRequest.model}", using as-is`);
+    }
 
-		const { sessionId } = resolveSessionId(req, anthropicRequest);
-		res.setHeader("X-Session-Id", sessionId);
+    const { sessionId } = resolveSessionId(req, anthropicRequest);
+    res.setHeader('X-Session-Id', sessionId);
 
-		const resetRequested = shouldResetConversation(req, anthropicRequest);
-		if (resetRequested) {
-			resetConversationState(sessionId);
-		}
+    const resetRequested = shouldResetConversation(req, anthropicRequest);
+    if (resetRequested) {
+      resetConversationState(sessionId);
+    }
 
-		const storedConversationState = resetRequested
-			? null
-			: getConversationState(sessionId);
-		const requestConversationState = normalizeConversationState(
-			anthropicRequest.conversation_state || anthropicRequest.conversationState,
-		);
-		const conversationState = mergeConversationStates(
-			storedConversationState,
-			requestConversationState,
-		);
+    const storedConversationState = resetRequested ? null : getConversationState(sessionId);
+    const requestConversationState = normalizeConversationState(
+      anthropicRequest.conversation_state || anthropicRequest.conversationState,
+    );
+    const conversationState = mergeConversationStates(
+      storedConversationState,
+      requestConversationState,
+    );
 
-		// Transform request
-		const hopGPTRequest = transformAnthropicToHopGPT(
-			anthropicRequest,
-			conversationState,
-		);
-		hopGPTRequest.model =
-			modelMapping.hopgptModel || strippedModel || hopGPTRequest.model;
+    // Transform request
+    const hopGPTRequest = transformAnthropicToHopGPT(anthropicRequest, conversationState);
+    hopGPTRequest.model = modelMapping.hopgptModel || strippedModel || hopGPTRequest.model;
 
-		// Debug logging for transformed request
-		log.debug("Request transformed", {
-			model: hopGPTRequest.model,
-			toolCount: hopGPTRequest.tools?.length || 0,
-			streaming: anthropicRequest.stream === true,
-		});
+    // Debug logging for transformed request
+    log.debug('Request transformed', {
+      model: hopGPTRequest.model,
+      toolCount: hopGPTRequest.tools?.length || 0,
+      streaming: anthropicRequest.stream === true,
+    });
 
-		// Extract thinking configuration for response transformer
-		const thinkingConfig = extractThinkingConfig(anthropicRequest);
+    // Extract thinking configuration for response transformer
+    const thinkingConfig = extractThinkingConfig(anthropicRequest);
+    const conversationAnalysis = analyzeConversationState(anthropicRequest.messages);
+    const suppressThinking = thinkingConfig.enabled && conversationAnalysis.inToolLoop;
 
-		const systemPrompt =
-			normalizeSystemPrompt(anthropicRequest.system) ??
-			normalizeSystemPrompt(
-				conversationState?.systemPrompt ?? conversationState?.system,
-			);
+    const systemPrompt =
+      normalizeSystemPrompt(anthropicRequest.system) ??
+      normalizeSystemPrompt(conversationState?.systemPrompt ?? conversationState?.system);
 
-		// Check for MCP passthrough mode via header or request metadata
-		// This preserves <mcp_tool_call> blocks in text for clients like OpenCode
-		// that parse and execute tool calls directly from the text stream
-		const mcpPassthrough =
-			req.headers["x-mcp-passthrough"] === "true" ||
-			anthropicRequest.metadata?.mcp_passthrough === true ||
-			anthropicRequest.metadata?.mcpPassthrough === true;
+    // Check for MCP passthrough mode via header or request metadata
+    // This preserves <mcp_tool_call> blocks in text for clients like OpenCode
+    // that parse and execute tool calls directly from the text stream
+    const mcpPassthrough =
+      req.headers['x-mcp-passthrough'] === 'true' ||
+      anthropicRequest.metadata?.mcp_passthrough === true ||
+      anthropicRequest.metadata?.mcpPassthrough === true;
 
-		const toolNames = extractToolNames(anthropicRequest.tools);
-		const hasTools = toolNames.length > 0;
-		const toolChoiceConfig = getToolChoiceConfig(anthropicRequest.tool_choice);
+    const toolNames = extractToolNames(anthropicRequest.tools);
+    const hasTools = toolNames.length > 0;
+    const toolChoiceConfig = getToolChoiceConfig(anthropicRequest.tool_choice);
 
-		// Determine if we should stop on tool use
-		const stopOnToolUse = shouldStopOnToolUse(
-			mcpPassthrough,
-			hasTools,
-			toolChoiceConfig,
-		);
+    // Determine if we should stop on tool use
+    const stopOnToolUse = shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig);
 
-		log.debug("Processing request", {
-			sessionId: sessionId.slice(0, 8) + "...",
-			mcpPassthrough,
-			thinkingEnabled: thinkingConfig.enabled,
-			hasTools,
-			disableParallelToolUse: toolChoiceConfig.disableParallelToolUse,
-			stopOnToolUse,
-		});
+    log.debug('Processing request', {
+      sessionId: sessionId.slice(0, 8) + '...',
+      mcpPassthrough,
+      thinkingEnabled: thinkingConfig.enabled,
+      suppressThinking,
+      hasTools,
+      disableParallelToolUse: toolChoiceConfig.disableParallelToolUse,
+      stopOnToolUse,
+    });
 
-		const transformerOptions = {
-			thinkingEnabled: thinkingConfig.enabled,
-			maxTokens: hopGPTRequest.max_tokens,
-			stopSequences: hopGPTRequest.stop_sequences,
-			systemPrompt,
-			mcpPassthrough,
-			stopOnToolUse,
-			toolNames,
-		};
+    const transformerOptions = {
+      thinkingEnabled: thinkingConfig.enabled,
+      suppressThinking,
+      maxTokens: hopGPTRequest.max_tokens,
+      stopSequences: hopGPTRequest.stop_sequences,
+      systemPrompt,
+      mcpPassthrough,
+      stopOnToolUse,
+      toolNames,
+    };
 
-		// Determine if streaming
-		const isStreaming = anthropicRequest.stream === true;
+    // Determine if streaming
+    const isStreaming = anthropicRequest.stream === true;
 
-		// Echo the requested model in responses to avoid client-side model validation errors.
-		const responseModel = anthropicRequest.model;
+    // Echo the requested model in responses to avoid client-side model validation errors.
+    const responseModel = anthropicRequest.model;
 
-		log.debug("Model resolution", {
-			requested: anthropicRequest.model,
-			stripped: strippedModel,
-			hopgpt: modelMapping.hopgptModel,
-			response: responseModel,
-		});
+    log.debug('Model resolution', {
+      requested: anthropicRequest.model,
+      stripped: strippedModel,
+      hopgpt: modelMapping.hopgptModel,
+      response: responseModel,
+    });
 
-		const transformer = new HopGPTToAnthropicTransformer(
-			responseModel,
-			transformerOptions,
-		);
+    const transformer = new HopGPTToAnthropicTransformer(responseModel, transformerOptions);
 
-		if (isStreaming) {
-			await handleStreamingRequest(
-				client,
-				hopGPTRequest,
-				transformer,
-				res,
-				req,
-				sessionId,
-			);
-		} else {
-			await handleNonStreamingRequest(
-				client,
-				hopGPTRequest,
-				transformer,
-				res,
-				sessionId,
-			);
-		}
-	} catch (error) {
-		handleError(error, res);
-	}
+    if (isStreaming) {
+      await handleStreamingRequest(client, hopGPTRequest, transformer, res, req, sessionId);
+    } else {
+      await handleNonStreamingRequest(client, hopGPTRequest, transformer, res, sessionId);
+    }
+  } catch (error) {
+    handleError(error, res);
+  }
 });
 
 /**
  * Handle streaming response
  */
-async function handleStreamingRequest(
-	client,
-	hopGPTRequest,
-	transformer,
-	res,
-	req,
-	sessionId,
-) {
-	// Stage SSE headers but do NOT flush them yet. If sendMessage() throws before
-	// any HopGPT byte arrives (expired creds, Cloudflare block, network error),
-	// headers stay unsent so handleError() can return a proper HTTP 4xx/5xx JSON
-	// body — matching the real Anthropic API. Once HopGPT responds successfully,
-	// the first res.write() inside pipeSSEStream flushes headers implicitly.
-	res.setHeader("Content-Type", "text/event-stream");
-	res.setHeader("Cache-Control", "no-cache");
-	res.setHeader("Connection", "keep-alive");
-	res.setHeader("X-Accel-Buffering", "no");
+async function handleStreamingRequest(client, hopGPTRequest, transformer, res, req, sessionId) {
+  // Stage SSE headers but do NOT flush them yet. If sendMessage() throws before
+  // any HopGPT byte arrives (expired creds, Cloudflare block, network error),
+  // headers stay unsent so handleError() can return a proper HTTP 4xx/5xx JSON
+  // body — matching the real Anthropic API. Once HopGPT responds successfully,
+  // the first res.write() inside pipeSSEStream flushes headers implicitly.
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
 
-	log.debug("Starting streaming response", {
-		sessionId: sessionId.slice(0, 8) + "...",
-	});
+  log.debug('Starting streaming response', {
+    sessionId: sessionId.slice(0, 8) + '...',
+  });
 
-	// Create abort controller for canceling upstream request on client disconnect
-	const abortController = new AbortController();
-	let clientDisconnected = false;
+  // Create abort controller for canceling upstream request on client disconnect
+  const abortController = new AbortController();
+  let clientDisconnected = false;
 
-	// Listen for client disconnect to abort upstream request
-	// NOTE: Must use res.on('close'), NOT req.on('close')
-	// req 'close' fires when request body is fully read (immediately for POST)
-	// res 'close' fires when the response connection is actually closed
-	const onClose = () => {
-		if (!res.writableEnded) {
-			clientDisconnected = true;
-			log.debug("Client disconnected, aborting stream", {
-				sessionId: sessionId.slice(0, 8) + "...",
-			});
-			abortController.abort();
-		}
-	};
-	res.on("close", onClose);
+  // Listen for client disconnect to abort upstream request
+  // NOTE: Must use res.on('close'), NOT req.on('close')
+  // req 'close' fires when request body is fully read (immediately for POST)
+  // res 'close' fires when the response connection is actually closed
+  const onClose = () => {
+    if (!res.writableEnded) {
+      clientDisconnected = true;
+      log.debug('Client disconnected, aborting stream', {
+        sessionId: sessionId.slice(0, 8) + '...',
+      });
+      abortController.abort();
+    }
+  };
+  res.on('close', onClose);
 
-	let hopGPTResponse;
-	const idlePingTimer = setTimeout(() => {
-		if (!clientDisconnected && !res.writableEnded && !res.destroyed) {
-			writeSSEEvents(res, transformer.createMessageStart());
-		}
-	}, getStreamIdlePingDelayMs());
-	try {
-		hopGPTResponse = await client.sendMessage(hopGPTRequest, {
-			stream: true,
-			signal: abortController.signal,
-		});
-	} catch (error) {
-		clearTimeout(idlePingTimer);
-		// Pre-stream failure — headers not yet flushed, so we can return a proper
-		// HTTP error response via the shared error handler.
-		res.removeListener("close", onClose);
-		if (clientDisconnected || res.writableEnded || res.destroyed) {
-			log.debug("Suppressing pre-stream error for disconnected client", {
-				error: error.message,
-			});
-			return;
-		}
-		if (res.headersSent) {
-			res.write(
-				formatSSEEvent({
-					event: "error",
-					data: {
-						type: "error",
-						error: {
-							type: "api_error",
-							message: error.message,
-						},
-					},
-				}),
-			);
-			res.end();
-			return;
-		}
-		// Clear the staged SSE headers so handleError can set application/json.
-		res.removeHeader("Content-Type");
-		res.removeHeader("Cache-Control");
-		res.removeHeader("Connection");
-		res.removeHeader("X-Accel-Buffering");
-		handleError(error, res);
-		return;
-	}
-	clearTimeout(idlePingTimer);
+  let hopGPTResponse;
+  const idlePingTimer = setTimeout(() => {
+    if (!clientDisconnected && !res.writableEnded && !res.destroyed) {
+      writeSSEEvents(res, transformer.createMessageStart());
+    }
+  }, getStreamIdlePingDelayMs());
+  try {
+    hopGPTResponse = await client.sendMessage(hopGPTRequest, {
+      stream: true,
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    clearTimeout(idlePingTimer);
+    // Pre-stream failure — headers not yet flushed, so we can return a proper
+    // HTTP error response via the shared error handler.
+    res.removeListener('close', onClose);
+    if (clientDisconnected || res.writableEnded || res.destroyed) {
+      log.debug('Suppressing pre-stream error for disconnected client', {
+        error: error.message,
+      });
+      return;
+    }
+    if (res.headersSent) {
+      res.write(
+        formatSSEEvent({
+          event: 'error',
+          data: {
+            type: 'error',
+            error: {
+              type: 'api_error',
+              message: error.message,
+            },
+          },
+        }),
+      );
+      res.end();
+      return;
+    }
+    // Clear the staged SSE headers so handleError can set application/json.
+    res.removeHeader('Content-Type');
+    res.removeHeader('Cache-Control');
+    res.removeHeader('Connection');
+    res.removeHeader('X-Accel-Buffering');
+    handleError(error, res);
+    return;
+  }
+  clearTimeout(idlePingTimer);
 
-	try {
-		await pipeSSEStream(
-			hopGPTResponse,
-			res,
-			(event) => {
-				return transformer.transformEvent(event);
-			},
-			abortController.signal,
-			{ autoEndOnMessageStop: false },
-		);
+  try {
+    await pipeSSEStream(
+      hopGPTResponse,
+      res,
+      (event) => {
+        return transformer.transformEvent(event);
+      },
+      abortController.signal,
+      { autoEndOnMessageStop: false },
+    );
 
-		// Ensure the stream is properly terminated even if HopGPT didn't send a final event
-		// This prevents clients from hanging indefinitely waiting for message_stop
-		if (!transformer.hasEnded() && !clientDisconnected && !res.writableEnded) {
-			const cleanupEvents = transformer.forceEnd();
-			for (const evt of cleanupEvents) {
-				res.write(`event: ${evt.event}\n`);
-				res.write(`data: ${JSON.stringify(evt.data)}\n\n`);
-			}
-		}
+    // Ensure the stream is properly terminated even if HopGPT didn't send a final event
+    // This prevents clients from hanging indefinitely waiting for message_stop
+    if (!transformer.hasEnded() && !clientDisconnected && !res.writableEnded) {
+      const cleanupEvents = transformer.forceEnd();
+      for (const evt of cleanupEvents) {
+        res.write(`event: ${evt.event}\n`);
+        res.write(`data: ${JSON.stringify(evt.data)}\n\n`);
+      }
+    }
 
-		// Update conversation state BEFORE ending response to prevent race conditions
-		// where clients make the next request before state is updated.
-		const nextState = transformer.getConversationState();
-		if (
-			nextState?.lastAssistantMessageId ||
-			nextState?.conversationId ||
-			nextState?.systemPrompt
-		) {
-			updateConversationState(sessionId, nextState);
-		}
+    // Update conversation state BEFORE ending response to prevent race conditions
+    // where clients make the next request before state is updated.
+    const nextState = transformer.getConversationState();
+    if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
+      updateConversationState(sessionId, nextState);
+    }
 
-		// Only end response if client is still connected
-		if (!clientDisconnected && !res.writableEnded) {
-			res.end();
-		}
-	} catch (error) {
-		// Mid-stream failure. Headers are already flushed (first HopGPT byte
-		// arrived), so we can't switch to HTTP JSON — emit an SSE error event
-		// instead.
-		if (clientDisconnected || res.writableEnded || res.destroyed) {
-			log.debug("Suppressing error for disconnected client", {
-				error: error.message,
-			});
-			return;
-		}
+    // Only end response if client is still connected
+    if (!clientDisconnected && !res.writableEnded) {
+      res.end();
+    }
+  } catch (error) {
+    // Mid-stream failure. Headers are already flushed (first HopGPT byte
+    // arrived), so we can't switch to HTTP JSON — emit an SSE error event
+    // instead.
+    if (clientDisconnected || res.writableEnded || res.destroyed) {
+      log.debug('Suppressing error for disconnected client', {
+        error: error.message,
+      });
+      return;
+    }
 
-		const errorEvent = {
-			event: "error",
-			data: {
-				type: "error",
-				error: {
-					type: "api_error",
-					message: error.message,
-				},
-			},
-		};
-		res.write(formatSSEEvent(errorEvent));
-		res.end();
-	} finally {
-		// Clean up the close listener to prevent memory leaks
-		res.removeListener("close", onClose);
-	}
+    const errorEvent = {
+      event: 'error',
+      data: {
+        type: 'error',
+        error: {
+          type: 'api_error',
+          message: error.message,
+        },
+      },
+    };
+    res.write(formatSSEEvent(errorEvent));
+    res.end();
+  } finally {
+    // Clean up the close listener to prevent memory leaks
+    res.removeListener('close', onClose);
+  }
 }
 
 function getStreamIdlePingDelayMs() {
-	const parsed = Number.parseInt(
-		process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS ?? "",
-		10,
-	);
-	return Number.isFinite(parsed) && parsed >= 0
-		? parsed
-		: DEFAULT_STREAM_IDLE_PING_DELAY_MS;
+  const parsed = Number.parseInt(process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_STREAM_IDLE_PING_DELAY_MS;
 }
 
 function writeSSEEvents(res, events) {
-	for (const event of events) {
-		res.write(formatSSEEvent(event));
-	}
-	if (typeof res.flush === "function") {
-		res.flush();
-	}
+  for (const event of events) {
+    res.write(formatSSEEvent(event));
+  }
+  if (typeof res.flush === 'function') {
+    res.flush();
+  }
 }
 
 /**
  * Handle non-streaming response
  */
-async function handleNonStreamingRequest(
-	client,
-	hopGPTRequest,
-	transformer,
-	res,
-	sessionId,
-) {
-	log.debug("Starting non-streaming response", {
-		sessionId: sessionId.slice(0, 8) + "...",
-	});
-	const hopGPTResponse = await client.sendMessage(hopGPTRequest, {
-		stream: false,
-	});
+async function handleNonStreamingRequest(client, hopGPTRequest, transformer, res, sessionId) {
+  log.debug('Starting non-streaming response', {
+    sessionId: sessionId.slice(0, 8) + '...',
+  });
+  const hopGPTResponse = await client.sendMessage(hopGPTRequest, {
+    stream: false,
+  });
 
-	// Process all events to accumulate the full response
-	await parseSSEStream(hopGPTResponse, (event) => {
-		transformer.transformEvent(event);
-	});
+  // Process all events to accumulate the full response
+  await parseSSEStream(hopGPTResponse, (event) => {
+    transformer.transformEvent(event);
+  });
 
-	// Require final:true. If the stream ended without it, HopGPT gave us an
-	// incomplete response — fail loudly instead of emitting empty content.
-	if (!transformer.hasEnded()) {
-		throw new HopGPTError(502, "Stream ended without final event", null);
-	}
+  // Require final:true. If the stream ended without it, HopGPT gave us an
+  // incomplete response — fail loudly instead of emitting empty content.
+  if (!transformer.hasEnded()) {
+    throw new HopGPTError(502, 'Stream ended without final event', null);
+  }
 
-	// Update conversation state BEFORE sending response to prevent race condition
-	// where Claude Code makes another request before state is updated
-	const nextState = transformer.getConversationState();
-	if (
-		nextState?.lastAssistantMessageId ||
-		nextState?.conversationId ||
-		nextState?.systemPrompt
-	) {
-		updateConversationState(sessionId, nextState);
-	}
+  // Update conversation state BEFORE sending response to prevent race condition
+  // where Claude Code makes another request before state is updated
+  const nextState = transformer.getConversationState();
+  if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
+    updateConversationState(sessionId, nextState);
+  }
 
-	// Build and send the complete response
-	const response = transformer.buildNonStreamingResponse();
-	res.json(response);
+  // Build and send the complete response
+  const response = transformer.buildNonStreamingResponse();
+  res.json(response);
 }
 
 /**
  * Validate Anthropic request format
  */
 function validateRequest(request) {
-	if (!request.model) {
-		return "model is required";
-	}
+  if (!request.model) {
+    return 'model is required';
+  }
 
-	if (!request.messages || !Array.isArray(request.messages)) {
-		return "messages array is required";
-	}
+  if (!request.messages || !Array.isArray(request.messages)) {
+    return 'messages array is required';
+  }
 
-	if (request.messages.length === 0) {
-		return "messages array cannot be empty";
-	}
+  if (request.messages.length === 0) {
+    return 'messages array cannot be empty';
+  }
 
-	for (let i = 0; i < request.messages.length; i++) {
-		const msg = request.messages[i];
+  for (let i = 0; i < request.messages.length; i++) {
+    const msg = request.messages[i];
 
-		if (!msg.role) {
-			return `messages[${i}].role is required`;
-		}
+    if (!msg.role) {
+      return `messages[${i}].role is required`;
+    }
 
-		if (!["user", "assistant"].includes(msg.role)) {
-			return `messages[${i}].role must be 'user' or 'assistant'`;
-		}
+    if (!['user', 'assistant'].includes(msg.role)) {
+      return `messages[${i}].role must be 'user' or 'assistant'`;
+    }
 
-		if (msg.content === undefined || msg.content === null) {
-			return `messages[${i}].content is required`;
-		}
-	}
+    if (msg.content === undefined || msg.content === null) {
+      return `messages[${i}].content is required`;
+    }
+  }
 
-	return null;
+  return null;
 }
 
 function normalizeConversationState(state) {
-	if (!state || typeof state !== "object") {
-		return null;
-	}
+  if (!state || typeof state !== 'object') {
+    return null;
+  }
 
-	return {
-		conversationId: state.conversationId || state.conversation_id || null,
-		lastAssistantMessageId:
-			state.lastAssistantMessageId || state.last_assistant_message_id || null,
-		systemPrompt:
-			state.systemPrompt || state.system_prompt || state.system || null,
-	};
+  return {
+    conversationId: state.conversationId || state.conversation_id || null,
+    lastAssistantMessageId: state.lastAssistantMessageId || state.last_assistant_message_id || null,
+    systemPrompt: state.systemPrompt || state.system_prompt || state.system || null,
+  };
 }
 
 function mergeConversationStates(storedState, requestState) {
-	if (!storedState && !requestState) {
-		return null;
-	}
+  if (!storedState && !requestState) {
+    return null;
+  }
 
-	if (!storedState) {
-		return requestState;
-	}
+  if (!storedState) {
+    return requestState;
+  }
 
-	if (!requestState) {
-		return storedState;
-	}
+  if (!requestState) {
+    return storedState;
+  }
 
-	return {
-		conversationId: requestState.conversationId ?? storedState.conversationId,
-		lastAssistantMessageId:
-			requestState.lastAssistantMessageId ?? storedState.lastAssistantMessageId,
-		systemPrompt: requestState.systemPrompt ?? storedState.systemPrompt,
-	};
+  return {
+    conversationId: requestState.conversationId ?? storedState.conversationId,
+    lastAssistantMessageId:
+      requestState.lastAssistantMessageId ?? storedState.lastAssistantMessageId,
+    systemPrompt: requestState.systemPrompt ?? storedState.systemPrompt,
+  };
 }
 
 /**
  * Handle errors and send appropriate response
  */
 function handleError(error, res) {
-	log.error("Request failed", {
-		error: error.message,
-		type: error.constructor.name,
-	});
+  log.error('Request failed', {
+    error: error.message,
+    type: error.constructor.name,
+  });
 
-	if (error instanceof AuthError) {
-		const resolved = mapAuthErrorResponse(error);
-		if (resolved.retryAfterSeconds) {
-			res.setHeader("Retry-After", resolved.retryAfterSeconds);
-		}
-		return res.status(resolved.statusCode).json(resolved.payload);
-	}
+  if (error instanceof AuthError) {
+    const resolved = mapAuthErrorResponse(error);
+    if (resolved.retryAfterSeconds) {
+      res.setHeader('Retry-After', resolved.retryAfterSeconds);
+    }
+    return res.status(resolved.statusCode).json(resolved.payload);
+  }
 
-	if (error instanceof HopGPTError) {
-		const statusCode =
-			error.statusCode >= 400 && error.statusCode < 600
-				? error.statusCode
-				: 502;
-		const responseBody =
-			typeof error.responseBody === "string" ? error.responseBody : "";
-		const resolved = mapErrorResponse({
-			statusCode,
-			message: error.message,
-			responseBody,
-			fallbackType: error.toAnthropicError().error?.type || "api_error",
-			retryAfterMs: error.retryAfterMs,
-		});
+  if (error instanceof HopGPTError) {
+    const statusCode = error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 502;
+    const responseBody = typeof error.responseBody === 'string' ? error.responseBody : '';
+    const resolved = mapErrorResponse({
+      statusCode,
+      message: error.message,
+      responseBody,
+      fallbackType: error.toAnthropicError().error?.type || 'api_error',
+      retryAfterMs: error.retryAfterMs,
+    });
 
-		if (resolved.retryAfterSeconds) {
-			res.setHeader("Retry-After", resolved.retryAfterSeconds);
-		}
-		return res.status(resolved.statusCode).json(resolved.payload);
-	}
+    if (resolved.retryAfterSeconds) {
+      res.setHeader('Retry-After', resolved.retryAfterSeconds);
+    }
+    return res.status(resolved.statusCode).json(resolved.payload);
+  }
 
-	const fallback = mapErrorResponse({
-		statusCode: 500,
-		message: error?.message,
-		responseBody: "",
-		fallbackType: "api_error",
-		retryAfterMs: null,
-	});
-	if (fallback.retryAfterSeconds) {
-		res.setHeader("Retry-After", fallback.retryAfterSeconds);
-	}
-	res.status(fallback.statusCode).json(fallback.payload);
+  const fallback = mapErrorResponse({
+    statusCode: 500,
+    message: error?.message,
+    responseBody: '',
+    fallbackType: 'api_error',
+    retryAfterMs: null,
+  });
+  if (fallback.retryAfterSeconds) {
+    res.setHeader('Retry-After', fallback.retryAfterSeconds);
+  }
+  res.status(fallback.statusCode).json(fallback.payload);
 }
 
 export default router;
@@ -569,14 +508,14 @@ export default router;
  * @returns {Array<string>} Array of tool names
  */
 function extractToolNames(tools) {
-	if (!Array.isArray(tools)) {
-		return [];
-	}
+  if (!Array.isArray(tools)) {
+    return [];
+  }
 
-	return tools
-		.map((tool) => tool?.name || tool?.function?.name || tool?.custom?.name)
-		.filter((name) => typeof name === "string" && name.trim().length > 0)
-		.map((name) => name.trim());
+  return tools
+    .map((tool) => tool?.name || tool?.function?.name || tool?.custom?.name)
+    .filter((name) => typeof name === 'string' && name.trim().length > 0)
+    .map((name) => name.trim());
 }
 
 /**
@@ -587,237 +526,201 @@ function extractToolNames(tools) {
  * @returns {boolean} Whether to stop on tool use
  */
 function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig) {
-	if (mcpPassthrough) {
-		return false;
-	}
+  if (mcpPassthrough) {
+    return false;
+  }
 
-	if (!hasTools) {
-		return false;
-	}
+  if (!hasTools) {
+    return false;
+  }
 
-	if (toolChoiceConfig.allowTools === false) {
-		return false;
-	}
+  if (toolChoiceConfig.allowTools === false) {
+    return false;
+  }
 
-	return toolChoiceConfig.disableParallelToolUse;
+  return toolChoiceConfig.disableParallelToolUse;
 }
 
-function mapErrorResponse({
-	statusCode,
-	message,
-	responseBody,
-	fallbackType,
-	retryAfterMs,
-}) {
-	const errorText = extractErrorText(message, responseBody);
-	const errorTextLower = errorText.toLowerCase();
-	const retryAfterSeconds = retryAfterMs
-		? Math.ceil(retryAfterMs / 1000)
-		: parseRetryAfterSeconds(errorText);
+function mapErrorResponse({ statusCode, message, responseBody, fallbackType, retryAfterMs }) {
+  const errorText = extractErrorText(message, responseBody);
+  const errorTextLower = errorText.toLowerCase();
+  const retryAfterSeconds = retryAfterMs
+    ? Math.ceil(retryAfterMs / 1000)
+    : parseRetryAfterSeconds(errorText);
 
-	if (
-		statusCode === 401 ||
-		errorTextLower.includes("unauthorized") ||
-		errorTextLower.includes("unauthenticated")
-	) {
-		return buildErrorResponse(
-			401,
-			"authentication_error",
-			errorText,
-			retryAfterSeconds,
-		);
-	}
+  if (
+    statusCode === 401 ||
+    errorTextLower.includes('unauthorized') ||
+    errorTextLower.includes('unauthenticated')
+  ) {
+    return buildErrorResponse(401, 'authentication_error', errorText, retryAfterSeconds);
+  }
 
-	if (
-		statusCode === 403 ||
-		errorTextLower.includes("forbidden") ||
-		errorTextLower.includes("permission")
-	) {
-		return buildErrorResponse(
-			403,
-			"permission_error",
-			errorText,
-			retryAfterSeconds,
-		);
-	}
+  if (
+    statusCode === 403 ||
+    errorTextLower.includes('forbidden') ||
+    errorTextLower.includes('permission')
+  ) {
+    return buildErrorResponse(403, 'permission_error', errorText, retryAfterSeconds);
+  }
 
-	if (statusCode === 429 || isRateLimitMessage(errorTextLower)) {
-		return buildErrorResponse(
-			429,
-			"rate_limit_error",
-			errorText,
-			retryAfterSeconds,
-		);
-	}
+  if (statusCode === 429 || isRateLimitMessage(errorTextLower)) {
+    return buildErrorResponse(429, 'rate_limit_error', errorText, retryAfterSeconds);
+  }
 
-	if (statusCode === 400 || isInvalidRequestMessage(errorTextLower)) {
-		return buildErrorResponse(
-			400,
-			"invalid_request_error",
-			errorText,
-			retryAfterSeconds,
-		);
-	}
+  if (statusCode === 400 || isInvalidRequestMessage(errorTextLower)) {
+    return buildErrorResponse(400, 'invalid_request_error', errorText, retryAfterSeconds);
+  }
 
-	const resolvedStatus =
-		statusCode >= 400 && statusCode < 600 ? statusCode : 502;
-	const resolvedType =
-		fallbackType ||
-		(resolvedStatus >= 500 ? "api_error" : "invalid_request_error");
-	return buildErrorResponse(
-		resolvedStatus,
-		resolvedType,
-		errorText,
-		retryAfterSeconds,
-	);
+  const resolvedStatus = statusCode >= 400 && statusCode < 600 ? statusCode : 502;
+  const resolvedType =
+    fallbackType || (resolvedStatus >= 500 ? 'api_error' : 'invalid_request_error');
+  return buildErrorResponse(resolvedStatus, resolvedType, errorText, retryAfterSeconds);
 }
 
 function mapAuthErrorResponse(error) {
-	// Map error types to status codes and error types
-	const errorMapping = getAuthErrorMapping(error);
+  // Map error types to status codes and error types
+  const errorMapping = getAuthErrorMapping(error);
 
-	return mapErrorResponse({
-		statusCode: errorMapping.statusCode,
-		message: error.message,
-		responseBody: "",
-		fallbackType: errorMapping.errorType,
-		retryAfterMs: null,
-	});
+  return mapErrorResponse({
+    statusCode: errorMapping.statusCode,
+    message: error.message,
+    responseBody: '',
+    fallbackType: errorMapping.errorType,
+    retryAfterMs: null,
+  });
 }
 
 function getAuthErrorMapping(error) {
-	if (
-		error instanceof RefreshTokenExpiredError ||
-		error instanceof TokenRefreshError
-	) {
-		return { statusCode: 401, errorType: "authentication_error" };
-	}
+  if (error instanceof RefreshTokenExpiredError || error instanceof TokenRefreshError) {
+    return { statusCode: 401, errorType: 'authentication_error' };
+  }
 
-	if (error instanceof CloudflareBlockedError) {
-		return { statusCode: 503, errorType: "api_error" };
-	}
+  if (error instanceof CloudflareBlockedError) {
+    return { statusCode: 503, errorType: 'api_error' };
+  }
 
-	if (error instanceof NetworkError) {
-		return { statusCode: 502, errorType: "api_error" };
-	}
+  if (error instanceof NetworkError) {
+    return { statusCode: 502, errorType: 'api_error' };
+  }
 
-	return { statusCode: 500, errorType: "api_error" };
+  return { statusCode: 500, errorType: 'api_error' };
 }
 
 function buildErrorResponse(statusCode, errorType, message, retryAfterSeconds) {
-	const payload = {
-		type: "error",
-		error: {
-			type: errorType,
-			message: message || "Internal server error",
-		},
-	};
+  const payload = {
+    type: 'error',
+    error: {
+      type: errorType,
+      message: message || 'Internal server error',
+    },
+  };
 
-	if (retryAfterSeconds) {
-		payload.error.retry_after_seconds = retryAfterSeconds;
-	}
+  if (retryAfterSeconds) {
+    payload.error.retry_after_seconds = retryAfterSeconds;
+  }
 
-	return {
-		statusCode,
-		payload,
-		retryAfterSeconds,
-	};
+  return {
+    statusCode,
+    payload,
+    retryAfterSeconds,
+  };
 }
 
 function extractErrorText(message, responseBody) {
-	if (typeof responseBody === "string" && responseBody.trim()) {
-		const parsed = parseErrorMessageFromBody(responseBody);
-		if (parsed) {
-			return parsed;
-		}
-	}
+  if (typeof responseBody === 'string' && responseBody.trim()) {
+    const parsed = parseErrorMessageFromBody(responseBody);
+    if (parsed) {
+      return parsed;
+    }
+  }
 
-	if (typeof message === "string" && message.trim()) {
-		return message;
-	}
+  if (typeof message === 'string' && message.trim()) {
+    return message;
+  }
 
-	return "Internal server error";
+  return 'Internal server error';
 }
 
 function parseErrorMessageFromBody(body) {
-	const trimmed = body.trim();
-	if (!trimmed) {
-		return null;
-	}
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return null;
+  }
 
-	try {
-		const parsed = JSON.parse(trimmed);
-		if (typeof parsed?.error?.message === "string") {
-			return parsed.error.message;
-		}
-		if (typeof parsed?.message === "string") {
-			return parsed.message;
-		}
-		if (typeof parsed === "string") {
-			return parsed;
-		}
-	} catch (error) {
-		return trimmed;
-	}
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed?.error?.message === 'string') {
+      return parsed.error.message;
+    }
+    if (typeof parsed?.message === 'string') {
+      return parsed.message;
+    }
+    if (typeof parsed === 'string') {
+      return parsed;
+    }
+  } catch (error) {
+    return trimmed;
+  }
 
-	return null;
+  return null;
 }
 
 function isRateLimitMessage(text) {
-	return (
-		text.includes("rate limit") ||
-		text.includes("too many requests") ||
-		text.includes("resource_exhausted") ||
-		text.includes("quota") ||
-		text.includes("retry after")
-	);
+  return (
+    text.includes('rate limit') ||
+    text.includes('too many requests') ||
+    text.includes('resource_exhausted') ||
+    text.includes('quota') ||
+    text.includes('retry after')
+  );
 }
 
 function isInvalidRequestMessage(text) {
-	return (
-		text.includes("invalid request") ||
-		text.includes("invalid_argument") ||
-		text.includes("invalid input") ||
-		text.includes("bad request")
-	);
+  return (
+    text.includes('invalid request') ||
+    text.includes('invalid_argument') ||
+    text.includes('invalid input') ||
+    text.includes('bad request')
+  );
 }
 
 function parseRetryAfterSeconds(text) {
-	if (!text) {
-		return null;
-	}
+  if (!text) {
+    return null;
+  }
 
-	const retryMatch = text.match(
-		/retry\s*after\s*([\d.]+)\s*(ms|s|sec|secs|seconds|m|minutes|h|hours)?/i,
-	);
-	if (retryMatch) {
-		const value = Number.parseFloat(retryMatch[1]);
-		const unit = (retryMatch[2] || "s").toLowerCase();
-		if (Number.isFinite(value)) {
-			if (unit.startsWith("ms")) return Math.ceil(value / 1000);
-			if (unit.startsWith("m")) return Math.ceil(value * 60);
-			if (unit.startsWith("h")) return Math.ceil(value * 3600);
-			return Math.ceil(value);
-		}
-	}
+  const retryMatch = text.match(
+    /retry\s*after\s*([\d.]+)\s*(ms|s|sec|secs|seconds|m|minutes|h|hours)?/i,
+  );
+  if (retryMatch) {
+    const value = Number.parseFloat(retryMatch[1]);
+    const unit = (retryMatch[2] || 's').toLowerCase();
+    if (Number.isFinite(value)) {
+      if (unit.startsWith('ms')) return Math.ceil(value / 1000);
+      if (unit.startsWith('m')) return Math.ceil(value * 60);
+      if (unit.startsWith('h')) return Math.ceil(value * 3600);
+      return Math.ceil(value);
+    }
+  }
 
-	const durationMatch = text.match(/(\d+)h(\d+)m(\d+)s|(\d+)m(\d+)s|(\d+)s/i);
-	if (durationMatch) {
-		if (durationMatch[1]) {
-			const hours = Number.parseInt(durationMatch[1], 10);
-			const minutes = Number.parseInt(durationMatch[2], 10);
-			const seconds = Number.parseInt(durationMatch[3], 10);
-			return hours * 3600 + minutes * 60 + seconds;
-		}
-		if (durationMatch[4]) {
-			const minutes = Number.parseInt(durationMatch[4], 10);
-			const seconds = Number.parseInt(durationMatch[5], 10);
-			return minutes * 60 + seconds;
-		}
-		if (durationMatch[6]) {
-			return Number.parseInt(durationMatch[6], 10);
-		}
-	}
+  const durationMatch = text.match(/(\d+)h(\d+)m(\d+)s|(\d+)m(\d+)s|(\d+)s/i);
+  if (durationMatch) {
+    if (durationMatch[1]) {
+      const hours = Number.parseInt(durationMatch[1], 10);
+      const minutes = Number.parseInt(durationMatch[2], 10);
+      const seconds = Number.parseInt(durationMatch[3], 10);
+      return hours * 3600 + minutes * 60 + seconds;
+    }
+    if (durationMatch[4]) {
+      const minutes = Number.parseInt(durationMatch[4], 10);
+      const seconds = Number.parseInt(durationMatch[5], 10);
+      return minutes * 60 + seconds;
+    }
+    if (durationMatch[6]) {
+      return Number.parseInt(durationMatch[6], 10);
+    }
+  }
 
-	return null;
+  return null;
 }

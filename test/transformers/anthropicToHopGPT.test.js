@@ -58,12 +58,8 @@ describe('anthropicToHopGPT transformers', () => {
     expect(result.text).toContain('Human: Check this');
     expect(result.parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
     expect(result.image_urls).toHaveLength(2);
-    expect(result.image_urls[0].image_url.url).toMatch(
-      /^data:image\/png;base64,/,
-    );
-    expect(result.image_urls[1].image_url.url).toBe(
-      'https://example.com/cat.png',
-    );
+    expect(result.image_urls[0].image_url.url).toMatch(/^data:image\/png;base64,/);
+    expect(result.image_urls[1].image_url.url).toBe('https://example.com/cat.png');
   });
 
   it('threads conversations with provided parent IDs', () => {
@@ -86,7 +82,7 @@ describe('anthropicToHopGPT transformers', () => {
     expect(result.text).toBe('Latest');
   });
 
-  it('keeps tool results with synthetic thinking continuation in threaded conversations', () => {
+  it('keeps tool results without synthetic continue prompts in threaded conversations', () => {
     const request = {
       model: 'claude-opus-4-5',
       system: 'System A',
@@ -127,9 +123,8 @@ describe('anthropicToHopGPT transformers', () => {
     expect(result.parentMessageId).toBe('assistant-1');
     expect(result.text).toContain('<tool_result tool_use_id="toolu_read">');
     expect(result.text).toContain('{"name":"hopgpt-anthropic-proxy"}');
-    expect(result.text).toContain('Assistant: [Tool execution completed.]');
-    expect(result.text).toContain('Human: [Continue]');
-    expect(result.text).not.toBe('[Continue]');
+    expect(result.text).not.toContain('[Tool execution completed.]');
+    expect(result.text).not.toContain('[Continue]');
     expect(result.text).not.toContain('can you explore the codebase');
   });
 

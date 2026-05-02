@@ -194,6 +194,91 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(res.text).toContain('"stop_reason":"tool_use"');
   });
 
+  it('does not inject continue prompts or stream thinking on tool-result continuations', async () => {
+    const functionCalls = `<function_calls>
+<invoke name="Read">
+<parameter name="file_path">src/index.js</parameter>
+</invoke>
+</function_calls>`;
+    const harSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"m2","conversationId":"c1"}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [
+              {
+                type: 'text',
+                text: `Thinking: The user said "Continue" after tool results.\n${functionCalls}`,
+              },
+            ],
+          },
+        },
+      })}\n\n` +
+      'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r2","conversationId":"c1","content":[]}}\n\n';
+    const sendMessage = vi.fn(async () => makeSSEResponse(harSSE));
+
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage,
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [
+          { role: 'user', content: 'inspect the codebase' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_read',
+                name: 'Read',
+                input: { file_path: 'README.md' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_read',
+                content: '# HoProxy',
+              },
+            ],
+          },
+        ],
+        tools: [
+          {
+            name: 'Read',
+            input_schema: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const hopGPTRequest = sendMessage.mock.calls[0][0];
+    expect(hopGPTRequest.text).toContain('<tool_result tool_use_id="toolu_read">');
+    expect(hopGPTRequest.text).not.toContain('[Continue]');
+    expect(hopGPTRequest.text).not.toContain('[Tool execution completed.]');
+    expect(res.text).not.toContain('thinking_delta');
+    expect(res.text).not.toContain('The user said');
+    expect(res.text).toContain('"type":"tool_use"');
+    expect(res.text).toContain('"name":"Read"');
+    expect(res.text).toContain('\\"file_path\\":\\"src/index.js\\"');
+  });
+
   it('stores HopGPT conversation state before completing the stream', async () => {
     const firstSSE =
       'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1"}}\n\n' +

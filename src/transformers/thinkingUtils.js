@@ -1,18 +1,17 @@
 import {
-  MIN_SIGNATURE_LENGTH,
   cacheThinkingSignature,
   cacheToolSignature,
   getCachedThinkingSignatureFamily,
-  getCachedToolSignature
-} from "./signatureCache.js";
+  getCachedToolSignature,
+  MIN_SIGNATURE_LENGTH,
+} from './signatureCache.js';
 
 function isThinkingBlock(block) {
-  return block?.type === "thinking" ||
-    block?.thought === true;
+  return block?.type === 'thinking' || block?.thought === true;
 }
 
 function getBlockSignature(block) {
-  if (!block || typeof block !== "object") {
+  if (!block || typeof block !== 'object') {
     return null;
   }
   if (block.thought === true) {
@@ -23,44 +22,47 @@ function getBlockSignature(block) {
 
 function hasValidSignature(block) {
   const signature = getBlockSignature(block);
-  return typeof signature === "string" && signature.length >= MIN_SIGNATURE_LENGTH;
+  return typeof signature === 'string' && signature.length >= MIN_SIGNATURE_LENGTH;
 }
 
 function sanitizeThinkingBlock(block) {
-  if (block.type === "redacted_thinking") {
+  if (block.type === 'redacted_thinking') {
     return {
-      type: "redacted_thinking",
-      data: block.data
+      type: 'redacted_thinking',
+      data: block.data,
     };
   }
 
   if (block.thought === true) {
     return {
       thought: true,
-      text: block.text || "",
-      thoughtSignature: block.thoughtSignature
+      text: block.text || '',
+      thoughtSignature: block.thoughtSignature,
     };
   }
 
   return {
-    type: "thinking",
-    thinking: block.thinking || "",
-    signature: block.signature
+    type: 'thinking',
+    thinking: block.thinking || '',
+    signature: block.signature,
   };
 }
 
 function restoreToolUseSignature(block) {
-  if (!block || block.type !== "tool_use") {
+  if (!block || block.type !== 'tool_use') {
     return block;
   }
 
   const nextBlock = { ...block };
 
-  if (nextBlock.id && typeof nextBlock.thoughtSignature === "string") {
+  if (nextBlock.id && typeof nextBlock.thoughtSignature === 'string') {
     cacheToolSignature(nextBlock.id, nextBlock.thoughtSignature);
   }
 
-  if ((!nextBlock.thoughtSignature || nextBlock.thoughtSignature.length < MIN_SIGNATURE_LENGTH) && nextBlock.id) {
+  if (
+    (!nextBlock.thoughtSignature || nextBlock.thoughtSignature.length < MIN_SIGNATURE_LENGTH) &&
+    nextBlock.id
+  ) {
     const cached = getCachedToolSignature(nextBlock.id);
     if (cached) {
       nextBlock.thoughtSignature = cached;
@@ -78,11 +80,11 @@ function sanitizeContentBlocks(content, targetFamily) {
   const sanitized = [];
 
   for (const block of content) {
-    if (!block || typeof block !== "object") {
+    if (!block || typeof block !== 'object') {
       continue;
     }
 
-    if (block.type === "redacted_thinking") {
+    if (block.type === 'redacted_thinking') {
       sanitized.push(sanitizeThinkingBlock(block));
       continue;
     }
@@ -94,7 +96,7 @@ function sanitizeContentBlocks(content, targetFamily) {
 
       const signature = getBlockSignature(block);
       if (signature) {
-        if (targetFamily === "gemini") {
+        if (targetFamily === 'gemini') {
           const family = getCachedThinkingSignatureFamily(signature);
           if (!family || family !== targetFamily) {
             continue;
@@ -107,13 +109,13 @@ function sanitizeContentBlocks(content, targetFamily) {
       continue;
     }
 
-    if (block.type === "tool_use") {
+    if (block.type === 'tool_use') {
       sanitized.push(restoreToolUseSignature(block));
       continue;
     }
 
-    if (block.type === "text") {
-      if (typeof block.text === "string" && block.text.trim().length === 0) {
+    if (block.type === 'text') {
+      if (typeof block.text === 'string' && block.text.trim().length === 0) {
         continue;
       }
     }
@@ -136,12 +138,12 @@ function reorderAssistantContent(content) {
   for (const block of content) {
     if (!block) continue;
 
-    if (block.type === "thinking" || block.type === "redacted_thinking" || block.thought === true) {
+    if (block.type === 'thinking' || block.type === 'redacted_thinking' || block.thought === true) {
       thinkingBlocks.push(block);
-    } else if (block.type === "tool_use") {
+    } else if (block.type === 'tool_use') {
       toolUseBlocks.push(block);
-    } else if (block.type === "text") {
-      if (typeof block.text === "string" && block.text.trim().length === 0) {
+    } else if (block.type === 'text') {
+      if (typeof block.text === 'string' && block.text.trim().length === 0) {
         continue;
       }
       textBlocks.push(block);
@@ -156,45 +158,55 @@ function reorderAssistantContent(content) {
 function messageHasToolUse(message) {
   const content = message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some(block => block?.type === "tool_use" || block?.functionCall);
+  return content.some((block) => block?.type === 'tool_use' || block?.functionCall);
 }
 
 function messageHasToolResult(message) {
   const content = message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some(block => block?.type === "tool_result" || block?.functionResponse);
+  return content.some((block) => block?.type === 'tool_result' || block?.functionResponse);
 }
 
 function messageHasValidThinking(message) {
   const content = message?.content;
   if (!Array.isArray(content)) return false;
-  return content.some(block => isThinkingBlock(block) && hasValidSignature(block));
+  return content.some((block) => isThinkingBlock(block) && hasValidSignature(block));
 }
 
 function isPlainUserMessage(message) {
-  if (message?.role !== "user") return false;
+  if (message?.role !== 'user') return false;
   const content = message.content;
   if (!Array.isArray(content)) {
-    return typeof content === "string";
+    return typeof content === 'string';
   }
-  return !content.some(block => block?.type === "tool_result" || block?.functionResponse);
+  return !content.some((block) => block?.type === 'tool_result' || block?.functionResponse);
 }
 
 export function analyzeConversationState(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { inToolLoop: false, interruptedTool: false, turnHasThinking: false, toolResultCount: 0 };
+    return {
+      inToolLoop: false,
+      interruptedTool: false,
+      turnHasThinking: false,
+      toolResultCount: 0,
+    };
   }
 
   let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "assistant" || messages[i]?.role === "model") {
+    if (messages[i]?.role === 'assistant' || messages[i]?.role === 'model') {
       lastAssistantIdx = i;
       break;
     }
   }
 
   if (lastAssistantIdx === -1) {
-    return { inToolLoop: false, interruptedTool: false, turnHasThinking: false, toolResultCount: 0 };
+    return {
+      inToolLoop: false,
+      interruptedTool: false,
+      turnHasThinking: false,
+      toolResultCount: 0,
+    };
   }
 
   const lastAssistant = messages[lastAssistantIdx];
@@ -221,18 +233,18 @@ export function analyzeConversationState(messages) {
     turnHasThinking: hasThinking,
     toolResultCount,
     lastAssistantIdx,
-    hasPlainUserMessageAfter
+    hasPlainUserMessageAfter,
   };
 }
 
 export function needsThinkingRecovery(messages) {
   const state = analyzeConversationState(messages);
-  if (!state.inToolLoop && !state.interruptedTool) return false;
+  if (!state.interruptedTool) return false;
   return !state.turnHasThinking;
 }
 
 function stripInvalidThinkingBlocks(messages, targetFamily) {
-  return messages.map(message => {
+  return messages.map((message) => {
     if (!Array.isArray(message.content)) {
       return message;
     }
@@ -244,12 +256,12 @@ function stripInvalidThinkingBlocks(messages, targetFamily) {
 
     return {
       ...message,
-      content: [{ type: "text", text: "." }]
+      content: [{ type: 'text', text: '.' }],
     };
   });
 }
 
-export function closeToolLoopForThinking(messages, targetFamily = "claude") {
+export function closeToolLoopForThinking(messages, targetFamily = 'claude') {
   const state = analyzeConversationState(messages);
 
   if (!state.inToolLoop && !state.interruptedTool) {
@@ -265,26 +277,14 @@ export function closeToolLoopForThinking(messages, targetFamily = "claude") {
   if (state.interruptedTool) {
     const insertIdx = state.lastAssistantIdx + 1;
     modified.splice(insertIdx, 0, {
-      role: "assistant",
-      content: [{ type: "text", text: "[Tool call was interrupted.]" }]
+      role: 'assistant',
+      content: [{ type: 'text', text: '[Tool call was interrupted.]' }],
     });
     return modified;
   }
 
   if (state.inToolLoop) {
-    const syntheticText = state.toolResultCount === 1
-      ? "[Tool execution completed.]"
-      : `[${state.toolResultCount} tool executions completed.]`;
-
-    modified.push({
-      role: "assistant",
-      content: [{ type: "text", text: syntheticText }]
-    });
-
-    modified.push({
-      role: "user",
-      content: [{ type: "text", text: "[Continue]" }]
-    });
+    return modified;
   }
 
   return modified;
@@ -295,16 +295,16 @@ export function prepareMessagesForThinking(messages, options = {}) {
     return messages;
   }
 
-  const targetFamily = options.targetFamily || "claude";
+  const targetFamily = options.targetFamily || 'claude';
   const thinkingEnabled = options.thinkingEnabled ?? false;
 
-  const normalized = messages.map(message => {
+  const normalized = messages.map((message) => {
     if (!Array.isArray(message.content)) {
       return message;
     }
 
     let content = sanitizeContentBlocks(message.content, targetFamily);
-    if (message.role === "assistant") {
+    if (message.role === 'assistant') {
       content = reorderAssistantContent(content);
     }
 

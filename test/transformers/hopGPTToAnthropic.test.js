@@ -307,6 +307,81 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(response.stop_reason).toBe('tool_use');
   });
 
+  it('suppresses continuation thinking while preserving tool calls', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-opus-4-5', {
+      thinkingEnabled: true,
+      suppressThinking: true,
+    });
+
+    const events = [];
+    const pushEvents = (data) => {
+      const result = transformer.transformEvent({
+        event: 'message',
+        data: JSON.stringify(data),
+      });
+      if (result) {
+        events.push(...(Array.isArray(result) ? result : [result]));
+      }
+    };
+
+    const functionCalls = `<function_calls>
+<invoke name="Read">
+<parameter name="file_path">README.md</parameter>
+</invoke>
+</function_calls>`;
+
+    pushEvents({ created: true, message: { id: 'msg-create' } });
+    pushEvents({
+      event: 'on_message_delta',
+      data: {
+        delta: {
+          content: [
+            {
+              type: 'text',
+              text: `Thinking: The user said "Continue" after tool results.\n${functionCalls}`,
+            },
+          ],
+        },
+      },
+    });
+    pushEvents({
+      final: true,
+      responseMessage: {
+        messageId: 'msg-final',
+        promptTokens: 0,
+        tokenCount: 0,
+        stopReason: 'stop',
+        content: [],
+      },
+    });
+
+    const thinkingDeltas = events.filter(
+      (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'thinking_delta',
+    );
+    expect(thinkingDeltas).toHaveLength(0);
+
+    const textDeltas = events
+      .filter(
+        (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta',
+      )
+      .map((evt) => evt.data.delta.text)
+      .join('');
+    expect(textDeltas).not.toContain('The user said "Continue"');
+
+    const toolStarts = events.filter(
+      (evt) => evt.event === 'content_block_start' && evt.data?.content_block?.type === 'tool_use',
+    );
+    expect(toolStarts).toHaveLength(1);
+    expect(toolStarts[0].data.content_block.name).toBe('Read');
+
+    const response = transformer.buildNonStreamingResponse();
+    expect(response.content.some((block) => block.type === 'thinking')).toBe(false);
+    expect(response.content).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'tool_use', name: 'Read' })]),
+    );
+    expect(response.stop_reason).toBe('tool_use');
+  });
+
   it('emits indexless text as regular text when thinking is disabled', () => {
     // When the model/request doesn't enable thinking, indexless text deltas
     // are just content and must flow through as text_delta — don't invent thinking.
