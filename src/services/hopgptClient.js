@@ -70,8 +70,9 @@ export class HopGPTClient {
       cf_clearance: configOrEnv(config.cfClearance, process.env.HOPGPT_COOKIE_CF_CLEARANCE),
       connect_sid: configOrEnv(config.connectSid, process.env.HOPGPT_COOKIE_CONNECT_SID),
       __cf_bm: configOrEnv(config.cfBm, process.env.HOPGPT_COOKIE_CF_BM),
-      // HopGPT's OpenID refresh path reads either server-side session tokens
-      // or the refreshToken cookie fallback when the Express session expires.
+      // HopGPT's OpenID refresh path normally reads server-side session tokens
+      // via connect.sid. Keep refreshToken as a legacy fallback when older
+      // deployments still provide it.
       refreshToken,
       openid_user_id: openidUserId,
       token_provider: resolveTokenProvider(config.tokenProvider, openidUserId),
@@ -227,6 +228,22 @@ export class HopGPTClient {
     }
   }
 
+  hasRefreshCredential() {
+    return Boolean(
+      this.cookies.refreshToken || (this.cookies.connect_sid && this.cookies.openid_user_id),
+    );
+  }
+
+  getRefreshCredentialKind() {
+    if (this.cookies.refreshToken) {
+      return 'refreshToken';
+    }
+    if (this.cookies.connect_sid && this.cookies.openid_user_id) {
+      return 'session';
+    }
+    return 'none';
+  }
+
   /**
    * Build the cookie header string from configured cookies
    * @returns {string} Cookie header value
@@ -329,12 +346,14 @@ export class HopGPTClient {
     const refreshTokenToSave = this.cookies.refreshToken;
     const openidIdToSave = this.cookies.openid_user_id;
     const bearerTokenToSave = this.bearerToken;
+    const refreshCredentialKind = this.getRefreshCredentialKind();
 
     log.debug('Persisting credentials to .env', {
       sessionMasked: maskToken(sessionToSave),
       refreshTokenMasked: maskToken(refreshTokenToSave),
       openidIdMasked: maskToken(openidIdToSave),
       bearerTokenMasked: maskToken(bearerTokenToSave),
+      refreshCredentialKind,
     });
 
     const writeOperation = (async () => {
@@ -403,23 +422,34 @@ export class HopGPTClient {
 
         fs.writeFileSync(this.envPath, finalContent);
 
-        // Verify the write by reading back the refresh token cookie since it's
-        // the durable fallback for /api/auth/refresh after session expiry.
+        // Verify the write by reading back whichever refresh credentials exist.
         const verifyContent = fs.readFileSync(this.envPath, 'utf-8');
-        const verifyMatch = verifyContent.match(/^HOPGPT_COOKIE_REFRESH_TOKEN=(.+)$/m);
-        const verifiedRefreshToken = verifyMatch ? verifyMatch[1].trim() : null;
+        const verifiedSid =
+          verifyContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m)?.[1]?.trim() || null;
+        const verifiedOpenid =
+          verifyContent.match(/^HOPGPT_COOKIE_OPENID_USER_ID=(.+)$/m)?.[1]?.trim() || null;
+        const verifiedRefreshToken =
+          verifyContent.match(/^HOPGPT_COOKIE_REFRESH_TOKEN=(.+)$/m)?.[1]?.trim() || null;
+        const writeVerified =
+          (!sessionToSave || verifiedSid === sessionToSave) &&
+          (!openidIdToSave || verifiedOpenid === openidIdToSave) &&
+          (!refreshTokenToSave || verifiedRefreshToken === refreshTokenToSave);
 
-        if (refreshTokenToSave && verifiedRefreshToken === refreshTokenToSave) {
+        if (writeVerified) {
           log.info('Credentials persisted and verified in .env', {
+            refreshCredentialKind,
+            sessionMasked: maskToken(verifiedSid),
             refreshTokenMasked: maskToken(verifiedRefreshToken),
           });
-        } else if (refreshTokenToSave) {
-          log.error('CRITICAL: .env verification failed — refresh token mismatch', {
-            expectedMasked: maskToken(refreshTokenToSave),
-            actualMasked: maskToken(verifiedRefreshToken),
-          });
         } else {
-          log.debug('Credentials persisted to .env (no refresh token to verify)');
+          log.error('CRITICAL: .env verification failed — credential mismatch', {
+            expectedSessionMasked: maskToken(sessionToSave),
+            actualSessionMasked: maskToken(verifiedSid),
+            expectedRefreshTokenMasked: maskToken(refreshTokenToSave),
+            actualRefreshTokenMasked: maskToken(verifiedRefreshToken),
+            expectedOpenidMasked: maskToken(openidIdToSave),
+            actualOpenidMasked: maskToken(verifiedOpenid),
+          });
         }
       } catch (error) {
         log.error('Failed to persist credentials', { error: error.message, stack: error.stack });
@@ -446,7 +476,7 @@ export class HopGPTClient {
    * @returns {boolean} True if token should be refreshed
    */
   _shouldProactivelyRefresh() {
-    if (!this.autoRefresh || !this.cookies.refreshToken) {
+    if (!this.autoRefresh || !this.hasRefreshCredential()) {
       return false;
     }
 
@@ -483,7 +513,7 @@ export class HopGPTClient {
   }
 
   /**
-   * Refresh the bearer token using the HopGPT refreshToken cookie
+   * Refresh the bearer token using the HopGPT browser session cookies.
    * @returns {Promise<boolean>} True if refresh succeeded
    * @throws {RefreshTokenExpiredError} When refresh token has expired
    * @throws {CloudflareBlockedError} When blocked by Cloudflare
@@ -495,8 +525,10 @@ export class HopGPTClient {
       return this.refreshPromise;
     }
 
-    if (!this.cookies.refreshToken) {
-      log.error('No refreshToken cookie available — run: npm run extract');
+    if (!this.hasRefreshCredential()) {
+      log.error(
+        'No HopGPT refresh credential available — run: npm run extract to capture connect.sid/openid_user_id cookies',
+      );
       return false;
     }
 
@@ -520,6 +552,7 @@ export class HopGPTClient {
    */
   async _doRefreshTokens() {
     log.info('Attempting token refresh', {
+      refreshCredentialKind: this.getRefreshCredentialKind(),
       refreshTokenPresent: !!this.cookies.refreshToken,
       refreshTokenMasked: maskToken(this.cookies.refreshToken),
       openidIdPresent: !!this.cookies.openid_user_id,
@@ -610,8 +643,8 @@ export class HopGPTClient {
         return false;
       }
 
-      // Update cookies from Set-Cookie headers (server may rotate
-      // refreshToken, connect.sid, and/or openid_user_id).
+      // Update cookies from Set-Cookie headers (server may rotate connect.sid,
+      // openid_user_id, token_provider, and on older deployments refreshToken).
       const oldRefreshToken = this.cookies.refreshToken;
       const oldSid = this.cookies.connect_sid;
       const oldOpenidId = this.cookies.openid_user_id;
@@ -645,9 +678,11 @@ export class HopGPTClient {
           new: maskToken(this.cookies.openid_user_id),
         });
       }
-      if (!this.cookies.refreshToken) {
-        log.error('No refreshToken after refresh — future refreshes will fail', {
+      if (!this.hasRefreshCredential()) {
+        log.error('No refresh credential after refresh — future refreshes will fail', {
           hadOldRefreshToken: !!oldRefreshToken,
+          hadOldSession: !!oldSid,
+          hasOpenidUser: !!this.cookies.openid_user_id,
         });
       }
 
@@ -1076,11 +1111,7 @@ export class HopGPTClient {
     const missing = [];
     const warnings = [];
 
-    // refreshToken is the durable credential HopGPT's refresh controller reads
-    // after the Express session no longer has server-side OpenID tokens.
-    if (!this.cookies.refreshToken) {
-      missing.push('HOPGPT_COOKIE_REFRESH_TOKEN');
-    }
+    const hasRefreshCredential = this.hasRefreshCredential();
 
     if (!this.cookies.openid_user_id) {
       warnings.push(
@@ -1104,12 +1135,20 @@ export class HopGPTClient {
       warnings.push('HOPGPT_USER_AGENT not set; Cloudflare may require a browser user agent');
     }
 
-    // Bearer token is optional if the refresh cookie is available.
+    if (!hasRefreshCredential) {
+      warnings.push(
+        'No refresh credential configured; set HOPGPT_COOKIE_CONNECT_SID with HOPGPT_COOKIE_OPENID_USER_ID, or legacy HOPGPT_COOKIE_REFRESH_TOKEN',
+      );
+    }
+
+    // Bearer token is optional if refresh credentials are available.
     if (!this.bearerToken) {
-      if (this.cookies.refreshToken) {
-        warnings.push('HOPGPT_BEARER_TOKEN not set, will attempt to refresh on first request');
+      if (hasRefreshCredential) {
+        warnings.push('HOPGPT_BEARER_TOKEN not set; will attempt to refresh on first request');
       } else {
-        missing.push('HOPGPT_BEARER_TOKEN');
+        missing.push(
+          'HOPGPT_BEARER_TOKEN or refresh credentials (HOPGPT_COOKIE_CONNECT_SID + HOPGPT_COOKIE_OPENID_USER_ID)',
+        );
       }
     }
 

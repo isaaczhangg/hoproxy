@@ -9,21 +9,22 @@ import {
 } from '../../src/services/browserCredentials.js';
 
 describe('generateEnvContent', () => {
-  it('produces the minimum-viable .env with refreshToken and openid_user_id', () => {
+  it('produces the minimum-viable .env with session and openid_user_id', () => {
     const content = generateEnvContent({
       bearerToken: null,
       userAgent: null,
       cookies: {
-        connect_sid: null,
-        refreshToken: 'refresh-abc',
+        connect_sid: 'sid-abc',
+        refreshToken: null,
         openid_user_id: 'oid-abc',
         cf_clearance: null,
         __cf_bm: null,
         token_provider: null,
       },
     });
-    expect(content).toContain('HOPGPT_COOKIE_REFRESH_TOKEN=refresh-abc');
+    expect(content).toContain('HOPGPT_COOKIE_CONNECT_SID=sid-abc');
     expect(content).toContain('HOPGPT_COOKIE_OPENID_USER_ID=oid-abc');
+    expect(content).not.toContain('HOPGPT_COOKIE_REFRESH_TOKEN=');
     expect(content).not.toContain('HOPGPT_COOKIE_TOKEN_PROVIDER=');
     expect(content).not.toContain('HOPGPT_BEARER_TOKEN=');
   });
@@ -74,7 +75,7 @@ describe('generateEnvContent — missing openid_user_id', () => {
 });
 
 describe('writeEnvFile', () => {
-  it('rewrites HOPGPT_COOKIE_REFRESH_TOKEN while preserving unrelated vars', () => {
+  it('removes stale refreshToken when writing session credentials', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hopgpt-ext-'));
     try {
       const envPath = path.join(tmp, '.env');
@@ -85,11 +86,11 @@ describe('writeEnvFile', () => {
 
       writeEnvFile(
         envPath,
-        'HOPGPT_COOKIE_REFRESH_TOKEN=fresh-refresh\nHOPGPT_COOKIE_OPENID_USER_ID=fresh\n',
+        'HOPGPT_COOKIE_CONNECT_SID=fresh-sid\nHOPGPT_COOKIE_OPENID_USER_ID=fresh\n',
       );
 
       const written = fs.readFileSync(envPath, 'utf-8');
-      expect(written).toContain('HOPGPT_COOKIE_REFRESH_TOKEN=fresh-refresh');
+      expect(written).toContain('HOPGPT_COOKIE_CONNECT_SID=fresh-sid');
       expect(written).toContain('HOPGPT_COOKIE_OPENID_USER_ID=fresh');
       expect(written).not.toContain('HOPGPT_COOKIE_REFRESH_TOKEN=stale');
       expect(written).toContain('UNRELATED_VAR=keep-me');

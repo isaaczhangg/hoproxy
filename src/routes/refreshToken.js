@@ -23,6 +23,28 @@ function maskToken(token) {
   return `${token.substring(0, 10)}...${token.substring(token.length - 10)}`;
 }
 
+function hasRefreshCredential(client) {
+  if (typeof client.hasRefreshCredential === 'function') {
+    return client.hasRefreshCredential();
+  }
+  return Boolean(
+    client.cookies?.refreshToken || (client.cookies?.connect_sid && client.cookies?.openid_user_id),
+  );
+}
+
+function refreshCredentialKind(client) {
+  if (typeof client.getRefreshCredentialKind === 'function') {
+    return client.getRefreshCredentialKind();
+  }
+  if (client.cookies?.refreshToken) {
+    return 'refreshToken';
+  }
+  if (client.cookies?.connect_sid && client.cookies?.openid_user_id) {
+    return 'session';
+  }
+  return 'none';
+}
+
 /**
  * GET /token-status
  * Get current token expiry status without triggering a refresh
@@ -33,7 +55,8 @@ router.get('/token-status', (req, res) => {
 
   const bearerTokenInfo = getTokenExpiryInfo(client.bearerToken);
   const openidInfo = getTokenExpiryInfo(client.cookies?.openid_user_id);
-  const refreshTokenPresent = !!client.cookies?.refreshToken;
+  const refreshCredentialPresent = hasRefreshCredential(client);
+  const credentialKind = refreshCredentialKind(client);
 
   const status = {
     bearerToken: bearerTokenInfo
@@ -47,10 +70,11 @@ router.get('/token-status', (req, res) => {
           note: client.bearerToken ? 'Token is not a decodable JWT' : 'No bearer token configured',
         },
     refreshCredential: {
-      present: refreshTokenPresent,
-      note: refreshTokenPresent
-        ? 'refreshToken cookie configured'
-        : 'No refreshToken cookie configured',
+      present: refreshCredentialPresent,
+      kind: credentialKind,
+      note: refreshCredentialPresent
+        ? `${credentialKind} refresh credential configured`
+        : 'No refresh credential configured',
     },
     openidUser: openidInfo
       ? {
@@ -82,12 +106,13 @@ router.post('/refresh-token', async (req, res) => {
   const client = getDefaultClient();
   log.info('Manual token refresh requested');
 
-  if (!client.cookies?.refreshToken) {
+  if (!hasRefreshCredential(client)) {
     log.warn('Token refresh failed: no refresh credential configured');
     return res.status(400).json({
       success: false,
       error: {
-        message: 'Missing refresh credential (HOPGPT_COOKIE_REFRESH_TOKEN). Run: npm run extract',
+        message:
+          'Missing refresh credential (HOPGPT_COOKIE_CONNECT_SID + HOPGPT_COOKIE_OPENID_USER_ID, or legacy HOPGPT_COOKIE_REFRESH_TOKEN). Run: npm run extract',
       },
     });
   }
@@ -150,6 +175,8 @@ router.get('/token-debug', (req, res) => {
   const memorySid = client.cookies?.connect_sid;
   const memoryRefreshToken = client.cookies?.refreshToken;
   const memoryOpenidId = client.cookies?.openid_user_id;
+  const memoryRefreshCredentialPresent = hasRefreshCredential(client);
+  const memoryRefreshCredentialKind = refreshCredentialKind(client);
   const memoryBearerInfo = getTokenExpiryInfo(memoryBearerToken);
   const memoryOpenidInfo = getTokenExpiryInfo(memoryOpenidId);
 
@@ -192,7 +219,8 @@ router.get('/token-debug', (req, res) => {
         isExpired: memoryBearerInfo?.isExpired ?? null,
       },
       refreshCredential: {
-        present: !!memoryRefreshToken,
+        present: memoryRefreshCredentialPresent,
+        kind: memoryRefreshCredentialKind,
         masked: maskToken(memoryRefreshToken),
         length: memoryRefreshToken?.length || 0,
       },
@@ -223,7 +251,8 @@ router.get('/token-debug', (req, res) => {
         matchesMemory: envBearerToken === memoryBearerToken,
       },
       refreshCredential: {
-        present: !!envRefreshToken,
+        present: !!envRefreshToken || !!(envSid && envOpenidId),
+        kind: envRefreshToken ? 'refreshToken' : envSid && envOpenidId ? 'session' : 'none',
         masked: maskToken(envRefreshToken),
         length: envRefreshToken?.length || 0,
         matchesMemory: envRefreshToken === memoryRefreshToken,
@@ -254,10 +283,8 @@ router.get('/token-debug', (req, res) => {
     diagnosis: [],
   };
 
-  if (!memoryRefreshToken) {
-    debug.diagnosis.push(
-      'CRITICAL: No refresh credential (refreshToken) in memory — run: npm run extract',
-    );
+  if (!memoryRefreshCredentialPresent) {
+    debug.diagnosis.push('CRITICAL: No refresh credential in memory — run: npm run extract');
   }
 
   if (!memoryOpenidId) {

@@ -73,7 +73,7 @@ describe('GET /token-status', () => {
   it('returns bearerToken, refreshCredential, openidUser, and session state', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: 'bearer',
-      cookies: { connect_sid: 'sid', refreshToken: 'refresh-token', openid_user_id: 'oid' },
+      cookies: { connect_sid: 'sid', refreshToken: null, openid_user_id: 'oid' },
       autoRefresh: true,
     });
 
@@ -84,13 +84,14 @@ describe('GET /token-status', () => {
     expect(res.body).toHaveProperty('bearerToken');
     expect(res.body).toHaveProperty('refreshCredential');
     expect(res.body.refreshCredential.present).toBe(true);
+    expect(res.body.refreshCredential.kind).toBe('session');
     expect(res.body).toHaveProperty('openidUser');
     expect(res.body.openidUser.present).toBe(true);
     expect(res.body).toHaveProperty('session');
     expect(res.body.session).toEqual({ present: true });
   });
 
-  it('refreshCredential.present is false when refreshToken is unset', async () => {
+  it('refreshCredential.present is false when refresh credentials are unset', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: null,
       cookies: {},
@@ -111,7 +112,7 @@ describe('POST /refresh-token — missing refresh credential', () => {
     getDefaultClient.mockReset();
   });
 
-  it('returns 400 with HOPGPT_COOKIE_REFRESH_TOKEN hint when refreshToken is missing', async () => {
+  it('returns 400 with session credential hint when refresh credentials are missing', async () => {
     getDefaultClient.mockReturnValue({
       cookies: {},
       refreshTokens: vi.fn(),
@@ -121,6 +122,23 @@ describe('POST /refresh-token — missing refresh credential', () => {
     const res = await request(app).post('/refresh-token');
 
     expect(res.status).toBe(400);
-    expect(res.body.error.message).toContain('HOPGPT_COOKIE_REFRESH_TOKEN');
+    expect(res.body.error.message).toContain('HOPGPT_COOKIE_CONNECT_SID');
+    expect(res.body.error.message).toContain('HOPGPT_COOKIE_OPENID_USER_ID');
+  });
+
+  it('uses session refresh credentials when refreshToken is absent', async () => {
+    const mockClient = {
+      bearerToken: 'new-bearer',
+      cookies: { connect_sid: 'session-id', refreshToken: null, openid_user_id: 'openid-id' },
+      refreshTokens: vi.fn().mockResolvedValue(true),
+    };
+    getDefaultClient.mockReturnValue(mockClient);
+
+    const app = createApp();
+    const res = await request(app).post('/refresh-token');
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(mockClient.refreshTokens).toHaveBeenCalledOnce();
   });
 });

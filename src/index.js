@@ -46,6 +46,27 @@ function logStartupTokenDiagnostics() {
   }
 
   const refreshToken = client.cookies?.refreshToken;
+  const openidId = client.cookies?.openid_user_id;
+  const sid = client.cookies?.connect_sid;
+  const hasSessionRefresh = Boolean(sid && openidId);
+  const hasRefreshCredential =
+    typeof client.hasRefreshCredential === 'function'
+      ? client.hasRefreshCredential()
+      : Boolean(refreshToken || hasSessionRefresh);
+
+  if (hasRefreshCredential) {
+    log.info('Refresh credential', {
+      kind:
+        typeof client.getRefreshCredentialKind === 'function'
+          ? client.getRefreshCredentialKind()
+          : refreshToken
+            ? 'refreshToken'
+            : 'session',
+    });
+  } else {
+    log.error('Refresh credential: NOT SET — automatic refresh will fail (run: npm run extract)');
+  }
+
   if (refreshToken) {
     log.info('Refresh token cookie', {
       present: true,
@@ -53,10 +74,9 @@ function logStartupTokenDiagnostics() {
       length: refreshToken.length,
     });
   } else {
-    log.error('Refresh token cookie: NOT SET — automatic refresh will fail (run: npm run extract)');
+    log.info('Refresh token cookie: NOT SET (normal for current HopGPT sessions)');
   }
 
-  const openidId = client.cookies?.openid_user_id;
   const openidInfo = getTokenExpiryInfo(openidId);
   if (openidId) {
     log.info('OpenID user cookie (openid_user_id)', {
@@ -77,7 +97,6 @@ function logStartupTokenDiagnostics() {
     );
   }
 
-  const sid = client.cookies?.connect_sid;
   if (sid) {
     log.info('Session cookie (connect.sid)', {
       present: true,

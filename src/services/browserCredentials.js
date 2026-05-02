@@ -202,10 +202,11 @@ export async function extractCredentials(options = {}) {
           `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`,
       );
     }
-    if (!credentials.cookies.refreshToken) {
+    if (!credentials.cookies.connect_sid && !credentials.cookies.refreshToken) {
       throw new Error(
-        `Logged in but refreshToken cookie was not set. ` +
-          `Automatic refresh needs this cookie after the HopGPT session expires. ` +
+        `Logged in but no HopGPT refresh credential was set. ` +
+          `Automatic refresh needs the connect.sid session cookie` +
+          ` (or legacy refreshToken cookie when present). ` +
           `Try signing out of HopGPT in all browser tabs and re-running \`npm run extract\`.`,
       );
     }
@@ -214,6 +215,11 @@ export async function extractCredentials(options = {}) {
     writeEnvFile(envPath, envContent);
 
     console.log('\nExtracted:');
+    console.log(
+      `  refresh credential: ${
+        credentials.cookies.refreshToken ? 'legacy refreshToken' : 'connect.sid session'
+      }`,
+    );
     console.log(`  refreshToken:   ${credentials.cookies.refreshToken ? 'yes' : 'no'}`);
     console.log(`  openid_user_id: ${credentials.cookies.openid_user_id ? 'yes' : 'no'}`);
     console.log(`  connect.sid:    ${credentials.cookies.connect_sid ? 'yes' : 'no'}`);
