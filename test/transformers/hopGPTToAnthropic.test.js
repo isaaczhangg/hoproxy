@@ -451,6 +451,17 @@ describe('hopGPTToAnthropic transformer', () => {
 
     expect(textDeltas).toBe('The README describes HoProxy as an API proxy.');
     expect(textDeltas).not.toBe('');
+
+    const textDeltaIndex = events.findIndex(
+      (evt) => evt.event === 'content_block_delta' && evt.data?.delta?.type === 'text_delta',
+    );
+    const fallbackStopIndex = events.findIndex(
+      (evt, index) => index > textDeltaIndex && evt.event === 'content_block_stop',
+    );
+    const messageDeltaIndex = events.findIndex((evt) => evt.event === 'message_delta');
+
+    expect(fallbackStopIndex).toBeGreaterThan(textDeltaIndex);
+    expect(fallbackStopIndex).toBeLessThan(messageDeltaIndex);
   });
 
   it('emits indexless text as regular text when thinking is disabled', () => {

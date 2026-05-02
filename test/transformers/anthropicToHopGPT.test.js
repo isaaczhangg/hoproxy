@@ -95,6 +95,11 @@ describe('anthropicToHopGPT transformers', () => {
           role: 'assistant',
           content: [
             {
+              type: 'thinking',
+              thinking: 'I should inspect the project metadata before answering.',
+              signature: 'x'.repeat(50),
+            },
+            {
               type: 'tool_use',
               id: 'toolu_read',
               name: 'Read',
@@ -125,6 +130,7 @@ describe('anthropicToHopGPT transformers', () => {
     expect(result.text).toContain('"file_path": "package.json"');
     expect(result.text).toContain('<tool_result tool_use_id="toolu_read">');
     expect(result.text).toContain('{"name":"hopgpt-anthropic-proxy"}');
+    expect(result.text).not.toContain('I should inspect the project metadata');
     expect(result.text).not.toContain('[Tool execution completed.]');
     expect(result.text).not.toContain('[Continue]');
     expect(result.text).not.toContain('can you explore the codebase');

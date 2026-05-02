@@ -935,16 +935,22 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
     const lastToolUseIndex = latestMessageHasToolResult
       ? findLastAssistantToolUseIndex(processedMessages, processedMessages.length - 2)
       : -1;
+    let replayedToolContext = false;
     if (lastToolUseIndex >= 0) {
       const currentToolTurnMessages = processedMessages.slice(lastToolUseIndex);
       const currentToolTurnText = buildConversationText(currentToolTurnMessages);
       if (currentToolTurnText) {
         text = currentToolTurnText;
+        replayedToolContext = true;
       }
       images = collectImagesFromMessages(currentToolTurnMessages, imageDetail);
     }
 
-    if (thinkingRecoveryInsertedMessages && originalLastAssistantIndex >= 0) {
+    if (
+      !replayedToolContext &&
+      thinkingRecoveryInsertedMessages &&
+      originalLastAssistantIndex >= 0
+    ) {
       const currentTurnMessages = processedMessages.slice(originalLastAssistantIndex + 1);
       const currentTurnText = buildConversationText(currentTurnMessages);
       if (currentTurnText) {

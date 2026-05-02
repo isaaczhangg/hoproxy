@@ -2884,6 +2884,7 @@ export class HopGPTToAnthropicTransformer {
       this.suppressedThinkingText.trim().length > 0
     ) {
       events.push(...this._emitTextDelta(sanitizeTextFull(this.suppressedThinkingText)));
+      events.push(...this._createBlockStopEvents());
     }
 
     // If HopGPT closed the stream after thinking-only (no reply tokens, no tool
