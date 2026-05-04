@@ -64,13 +64,11 @@ export function resolveSessionId(req, requestBody) {
 }
 
 export function shouldResetConversation(req, requestBody) {
-  // Check header for reset flag
   const headerReset = normalizeId(req.get('x-conversation-reset'));
   if (headerReset && headerReset.toLowerCase() === 'true') {
     return true;
   }
 
-  // Check metadata for various reset flags
   const metadata = requestBody?.metadata;
   if (!metadata) {
     return false;

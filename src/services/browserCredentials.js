@@ -1,10 +1,5 @@
-/**
- * Browser Credential Extraction Module
- * Extracts HopGPT credentials by observing authenticated API traffic.
- */
-
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
@@ -42,16 +37,9 @@ async function launchBrowser(options = {}) {
   }
 }
 
-/**
- * Returns true when `response` signals that the user has genuinely authenticated.
- * We need to distinguish "page loaded" from "user completed SSO" — HopGPT's JS
- * hits /api/auth/refresh on every page load, including unauthenticated ones,
- * so that endpoint is NOT a valid login signal.
- *
- * A cookie named openid_user_id in the REQUEST header proves SSO completed
- * (the OIDC issuer set it after password + 2FA). We accept authenticated
- * /api/user or /api/config calls as the signal.
- */
+// /api/auth/refresh fires for anonymous page loads too. A post-login /api/user
+// or /api/config response with openid_user_id in the request cookie is the
+// reliable SSO completion signal.
 function isLoginSignal(response) {
   const url = response.url();
   const status = response.status();
@@ -61,11 +49,8 @@ function isLoginSignal(response) {
   const isConfig = url.startsWith(HOPGPT_URL + CONFIG_PATH);
   if (!isUser && !isConfig) return false;
 
-  // The request must carry openid_user_id — that's the OIDC-issued cookie that
-  // only exists after the user actually authenticated. connect.sid alone is set
-  // even for anonymous visitors.
   const request = response.request();
-  const cookieHeader = request.headers()['cookie'] || '';
+  const cookieHeader = request.headers().cookie || '';
   return /(?:^|;\s*)openid_user_id=/.test(cookieHeader);
 }
 
@@ -83,19 +68,16 @@ export async function extractCredentials(options = {}) {
   try {
     const page = await browser.newPage();
 
-    // Capture Authorization headers on any outgoing chat.ai.jh.edu/api/* request.
-    // This is not request-intercepting (no request.continue() needed) — we observe
-    // via the request event, which does not block the request.
+    // request events observe traffic without enabling Puppeteer's interception mode.
     page.on('request', (request) => {
       const url = request.url();
-      if (!url.startsWith(HOPGPT_URL + '/api/')) return;
-      const auth = request.headers()['authorization'];
-      if (auth && auth.startsWith('Bearer ')) {
+      if (!url.startsWith(`${HOPGPT_URL}/api/`)) return;
+      const auth = request.headers().authorization;
+      if (auth?.startsWith('Bearer ')) {
         bearerToken = auth.slice('Bearer '.length);
       }
     });
 
-    // Primary: resolve when we see a post-login API response.
     const loginDetected = new Promise((resolve) => {
       const handler = (response) => {
         if (isLoginSignal(response)) {
@@ -133,11 +115,8 @@ export async function extractCredentials(options = {}) {
     console.log('Validating browser refresh session...');
     bearerToken = await refreshBrowserSession(page);
 
-    // Give the browser a moment to process Set-Cookie from the refresh response.
     await new Promise((r) => setTimeout(r, 1500));
 
-    // Harvest cookies. Prefer browser.cookies() (modern API, sees every tab's jar);
-    // fall back to page.cookies(url) on older Puppeteer.
     const cookies =
       typeof browser.cookies === 'function'
         ? await browser.cookies()
@@ -158,9 +137,6 @@ export async function extractCredentials(options = {}) {
     };
 
     if (!credentials.cookies.openid_user_id) {
-      // Diagnostic: dump every cookie we can see, across every domain, and also
-      // try the page-scoped API as a fallback in case browser.cookies() missed
-      // something set on a different origin during SSO redirects.
       const allByDomain = {};
       for (const c of cookies) {
         const d = c.domain || '<no-domain>';
@@ -172,8 +148,6 @@ export async function extractCredentials(options = {}) {
         console.error(`  ${d}: ${names.sort().join(', ')}`);
       }
 
-      // Fallback: try page.cookies() with several URL candidates (OIDC cookies may
-      // be scoped to a login subdomain).
       const urlCandidates = [
         HOPGPT_URL,
         'https://login.jh.edu',
@@ -278,9 +252,6 @@ function findCookie(cookies, name) {
   return hit ? hit.value : null;
 }
 
-/**
- * Build the .env contents from a credentials object. Pure — no I/O.
- */
 export function generateEnvContent(credentials) {
   const lines = [
     '# HopGPT Credentials',
@@ -322,10 +293,6 @@ export function generateEnvContent(credentials) {
   return lines.join('\n');
 }
 
-/**
- * Write or update .env file, preserving non-HopGPT variables.
- * Rewrites HopGPT credential variables while preserving unrelated config.
- */
 export function writeEnvFile(envPath, newContent) {
   const preservedLines = [];
 
@@ -356,7 +323,7 @@ export function writeEnvFile(envPath, newContent) {
       }
 
       const isHopgptVar = hopgptVars.some(
-        (v) => trimmed.startsWith(v + '=') || trimmed.startsWith(`# ${v}`),
+        (v) => trimmed.startsWith(`${v}=`) || trimmed.startsWith(`# ${v}`),
       );
       if (!isHopgptVar) {
         preservedLines.push(line);
@@ -366,7 +333,7 @@ export function writeEnvFile(envPath, newContent) {
 
   let finalContent = newContent;
   if (preservedLines.length > 0) {
-    finalContent = newContent + '\n# Other configuration\n' + preservedLines.join('\n') + '\n';
+    finalContent = `${newContent}\n# Other configuration\n${preservedLines.join('\n')}\n`;
   }
 
   fs.writeFileSync(envPath, finalContent);

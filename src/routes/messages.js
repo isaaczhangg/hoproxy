@@ -31,11 +31,7 @@ const router = Router();
 const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 250;
 const DEFAULT_TOOL_BATCH_IDLE_CLOSE_MS = 750;
 
-/**
- * POST /v1/messages/count_tokens
- * Anthropic Messages API token count endpoint (not implemented)
- */
-router.post('/messages/count_tokens', (req, res) => {
+router.post('/messages/count_tokens', (_req, res) => {
   res.status(501).json({
     type: 'error',
     error: {
@@ -46,15 +42,10 @@ router.post('/messages/count_tokens', (req, res) => {
   });
 });
 
-/**
- * POST /v1/messages
- * Anthropic Messages API compatible endpoint
- */
 router.post('/messages', async (req, res) => {
   try {
     const anthropicRequest = req.body;
 
-    // Validate request
     const validationError = validateRequest(anthropicRequest);
     if (validationError) {
       return res.status(400).json({
@@ -66,10 +57,8 @@ router.post('/messages', async (req, res) => {
       });
     }
 
-    // Get HopGPT client
     const client = getDefaultClient();
 
-    // Validate authentication
     const authValidation = client.validateAuth();
     if (!authValidation.valid) {
       return res.status(401).json({
@@ -81,12 +70,10 @@ router.post('/messages', async (req, res) => {
       });
     }
 
-    // Log any warnings
     if (authValidation.warnings?.length > 0) {
       authValidation.warnings.forEach((warning) => log.warn(warning));
     }
 
-    // Resolve model mapping for HopGPT and response model names
     const requestedModel = anthropicRequest.model;
     const strippedModel = stripProviderPrefix(requestedModel);
     const modelMapping = resolveModelMapping(strippedModel);
@@ -111,18 +98,15 @@ router.post('/messages', async (req, res) => {
       requestConversationState,
     );
 
-    // Transform request
     const hopGPTRequest = transformAnthropicToHopGPT(anthropicRequest, conversationState);
     hopGPTRequest.model = modelMapping.hopgptModel || strippedModel || hopGPTRequest.model;
 
-    // Debug logging for transformed request
     log.debug('Request transformed', {
       model: hopGPTRequest.model,
       toolCount: hopGPTRequest.tools?.length || 0,
       streaming: anthropicRequest.stream === true,
     });
 
-    // Extract thinking configuration for response transformer
     const thinkingConfig = extractThinkingConfig(anthropicRequest);
     const conversationAnalysis = analyzeConversationState(anthropicRequest.messages);
     const suppressThinking = thinkingConfig.enabled && conversationAnalysis.inToolLoop;
@@ -131,7 +115,6 @@ router.post('/messages', async (req, res) => {
       normalizeSystemPrompt(anthropicRequest.system) ??
       normalizeSystemPrompt(conversationState?.systemPrompt ?? conversationState?.system);
 
-    // Check for MCP passthrough mode via header or request metadata
     // This preserves <mcp_tool_call> blocks in text for clients like OpenCode
     // that parse and execute tool calls directly from the text stream
     const mcpPassthrough =
@@ -144,7 +127,6 @@ router.post('/messages', async (req, res) => {
     const toolChoiceConfig = getToolChoiceConfig(anthropicRequest.tool_choice);
     const isStreaming = anthropicRequest.stream === true;
 
-    // Determine if we should stop on tool use
     const stopOnToolUse = shouldStopOnToolUse(
       mcpPassthrough,
       hasTools,
@@ -153,7 +135,7 @@ router.post('/messages', async (req, res) => {
     );
 
     log.debug('Processing request', {
-      sessionId: sessionId.slice(0, 8) + '...',
+      sessionId: `${sessionId.slice(0, 8)}...`,
       mcpPassthrough,
       thinkingEnabled: thinkingConfig.enabled,
       suppressThinking,
@@ -195,10 +177,7 @@ router.post('/messages', async (req, res) => {
   }
 });
 
-/**
- * Handle streaming response
- */
-async function handleStreamingRequest(client, hopGPTRequest, transformer, res, req, sessionId) {
+async function handleStreamingRequest(client, hopGPTRequest, transformer, res, _req, sessionId) {
   // Stage SSE headers but do NOT flush them yet. If sendMessage() throws before
   // any HopGPT byte arrives (expired creds, Cloudflare block, network error),
   // headers stay unsent so handleError() can return a proper HTTP 4xx/5xx JSON
@@ -210,10 +189,9 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
   res.setHeader('X-Accel-Buffering', 'no');
 
   log.debug('Starting streaming response', {
-    sessionId: sessionId.slice(0, 8) + '...',
+    sessionId: `${sessionId.slice(0, 8)}...`,
   });
 
-  // Create abort controller for canceling upstream request on client disconnect
   const abortController = new AbortController();
   let clientDisconnected = false;
 
@@ -225,7 +203,7 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
     if (!res.writableEnded) {
       clientDisconnected = true;
       log.debug('Client disconnected, aborting stream', {
-        sessionId: sessionId.slice(0, 8) + '...',
+        sessionId: `${sessionId.slice(0, 8)}...`,
       });
       abortController.abort();
     }
@@ -300,8 +278,7 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
       abortController.abort();
     }
 
-    // Ensure the stream is properly terminated even if HopGPT didn't send a final event
-    // This prevents clients from hanging indefinitely waiting for message_stop
+    // HopGPT can end without a final event; Anthropic clients still need message_stop.
     if (!transformer.hasEnded() && !clientDisconnected && !res.writableEnded) {
       const cleanupEvents = transformer.forceEnd();
       for (const evt of cleanupEvents) {
@@ -310,14 +287,12 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
       }
     }
 
-    // Update conversation state BEFORE ending response to prevent race conditions
-    // where clients make the next request before state is updated.
+    // Update state before ending the response so fast follow-up requests see it.
     const nextState = transformer.getConversationState();
     if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
       updateConversationState(sessionId, nextState);
     }
 
-    // Only end response if client is still connected
     if (!clientDisconnected && !res.writableEnded) {
       res.end();
     }
@@ -345,7 +320,6 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, r
     res.write(formatSSEEvent(errorEvent));
     res.end();
   } finally {
-    // Clean up the close listener to prevent memory leaks
     res.removeListener('close', onClose);
   }
 }
@@ -369,18 +343,14 @@ function writeSSEEvents(res, events) {
   }
 }
 
-/**
- * Handle non-streaming response
- */
 async function handleNonStreamingRequest(client, hopGPTRequest, transformer, res, sessionId) {
   log.debug('Starting non-streaming response', {
-    sessionId: sessionId.slice(0, 8) + '...',
+    sessionId: `${sessionId.slice(0, 8)}...`,
   });
   const hopGPTResponse = await client.sendMessage(hopGPTRequest, {
     stream: false,
   });
 
-  // Process all events to accumulate the full response
   await parseSSEStream(hopGPTResponse, (event) => {
     transformer.transformEvent(event);
   });
@@ -391,21 +361,16 @@ async function handleNonStreamingRequest(client, hopGPTRequest, transformer, res
     throw new HopGPTError(502, 'Stream ended without final event', null);
   }
 
-  // Update conversation state BEFORE sending response to prevent race condition
-  // where Claude Code makes another request before state is updated
+  // Update state before sending the response so fast follow-up requests see it.
   const nextState = transformer.getConversationState();
   if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
     updateConversationState(sessionId, nextState);
   }
 
-  // Build and send the complete response
   const response = transformer.buildNonStreamingResponse();
   res.json(response);
 }
 
-/**
- * Validate Anthropic request format
- */
 function validateRequest(request) {
   if (!request.model) {
     return 'model is required';
@@ -471,9 +436,6 @@ function mergeConversationStates(storedState, requestState) {
   };
 }
 
-/**
- * Handle errors and send appropriate response
- */
 function handleError(error, res) {
   log.error('Request failed', {
     error: error.message,
@@ -520,11 +482,6 @@ function handleError(error, res) {
 
 export default router;
 
-/**
- * Extract tool names from tools array
- * @param {Array} tools - Array of tool definitions
- * @returns {Array<string>} Array of tool names
- */
 function extractToolNames(tools) {
   if (!Array.isArray(tools)) {
     return [];
@@ -536,14 +493,6 @@ function extractToolNames(tools) {
     .map((name) => name.trim());
 }
 
-/**
- * Determine if we should stop on tool use
- * @param {boolean} mcpPassthrough - Whether MCP passthrough is enabled
- * @param {boolean} hasTools - Whether tools are present
- * @param {object} toolChoiceConfig - Tool choice configuration
- * @param {boolean} isStreaming - Whether the request streams events to the client
- * @returns {boolean} Whether to stop on tool use
- */
 function shouldStopOnToolUse(mcpPassthrough, hasTools, toolChoiceConfig, isStreaming) {
   if (mcpPassthrough) {
     return false;
@@ -598,7 +547,6 @@ function mapErrorResponse({ statusCode, message, responseBody, fallbackType, ret
 }
 
 function mapAuthErrorResponse(error) {
-  // Map error types to status codes and error types
   const errorMapping = getAuthErrorMapping(error);
 
   return mapErrorResponse({
@@ -678,7 +626,7 @@ function parseErrorMessageFromBody(body) {
     if (typeof parsed === 'string') {
       return parsed;
     }
-  } catch (error) {
+  } catch (_error) {
     return trimmed;
   }
 

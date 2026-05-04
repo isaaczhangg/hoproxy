@@ -2,34 +2,24 @@ import { loggers } from './logger.js';
 
 const log = loggers.model;
 
-// Model mappings for HopGPT proxy
-// - canonical: The standard model ID returned to clients (should match what clients expect)
-// - hopgpt: The model ID used when calling HopGPT backend
-// - aliases: Alternative names that clients might use (all resolve to the same model)
-//
-// IMPORTANT: Do NOT include "-thinking" suffix in canonical or aliases.
-// Clients like OpenCode validate model names against Anthropic's official list,
-// and "-thinking" variants are not recognized, causing ProviderModelNotFoundError.
-// The proxy enables thinking mode internally based on model capabilities.
-//
-// Note: The addModelVariants() function below automatically handles -thinking
-// variants for INPUT resolution, so users can still request "-thinking" models.
+// Canonical and alias IDs stay Anthropic-compatible for clients like OpenCode;
+// -thinking variants are accepted only as input aliases.
 const MODEL_MAPPINGS = Object.freeze([
   {
     canonical: 'claude-opus-4-5',
     hopgpt: 'claude-opus-4.5',
-    aliases: ['claude-opus-4.5']
+    aliases: ['claude-opus-4.5'],
   },
   {
     canonical: 'claude-sonnet-4-5',
     hopgpt: 'claude-sonnet-4.5',
-    aliases: ['claude-sonnet-4.5']
+    aliases: ['claude-sonnet-4.5'],
   },
   {
     canonical: 'claude-haiku-4-5',
     hopgpt: 'claude-haiku-4.5',
-    aliases: ['claude-haiku-4.5']
-  }
+    aliases: ['claude-haiku-4.5'],
+  },
 ]);
 
 const VERSION_SUFFIX_REGEX = /-(\d{8}|\d{4}-\d{2}-\d{2}|latest|stable)$/;
@@ -102,7 +92,7 @@ export function resolveModelMapping(modelName) {
     return {
       hopgptModel: modelName,
       responseModel: modelName,
-      mapped: false
+      mapped: false,
     };
   }
 
@@ -114,12 +104,12 @@ export function resolveModelMapping(modelName) {
       log.debug('Model mapped', {
         input: modelName,
         hopgpt: mapping.hopgpt,
-        response: mapping.canonical
+        response: mapping.canonical,
       });
       return {
         hopgptModel: mapping.hopgpt,
         responseModel: mapping.canonical,
-        mapped: true
+        mapped: true,
       };
     }
   }
@@ -128,7 +118,7 @@ export function resolveModelMapping(modelName) {
   return {
     hopgptModel: strippedModel,
     responseModel: strippedModel,
-    mapped: false
+    mapped: false,
   };
 }
 

@@ -3,12 +3,6 @@ import { loggers } from './logger.js';
 
 const log = loggers.transform;
 
-/**
- * Parse an SSE stream from a fetch response
- * @param {Response} response - Fetch response with SSE body
- * @param {function} onEvent - Callback for each parsed event
- * @returns {Promise<void>}
- */
 export async function parseSSEStream(response, onEvent) {
   const parser = createParser((event) => {
     if (event.type === 'event') {
@@ -35,14 +29,6 @@ export async function parseSSEStream(response, onEvent) {
   }
 }
 
-/**
- * Parse SSE stream and pipe transformed events to response
- * @param {Response} fetchResponse - Fetch response with SSE body
- * @param {object} res - Express response object
- * @param {function} transformEvent - Function to transform each event
- * @param {AbortSignal} [signal] - Optional abort signal to cancel streaming
- * @returns {Promise<object>} Final transformer state
- */
 export async function pipeSSEStream(fetchResponse, res, transformEvent, signal, options = {}) {
   const { autoEndOnMessageStop = false, onToolUseIdle = null, toolUseIdleCloseMs = null } = options;
   let stoppedOnMessageStop = false;
@@ -195,11 +181,6 @@ function isMessageStopEvent(evt) {
   return evt.event === 'message_stop';
 }
 
-/**
- * Collect all events from an SSE stream
- * @param {Response} response - Fetch response with SSE body
- * @returns {Promise<Array>} Array of parsed events
- */
 export async function collectSSEEvents(response) {
   const events = [];
 

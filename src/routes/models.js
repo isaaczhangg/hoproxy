@@ -5,15 +5,8 @@ import { MODEL_MAPPINGS, resolveModelMapping, stripProviderPrefix } from '../uti
 const log = loggers.model;
 const router = Router();
 
-/**
- * Available models in HopGPT
- * Format compatible with Anthropic's model list API
- *
- * IMPORTANT: Model IDs must NOT include "-thinking" suffix.
- * Clients like OpenCode validate model names against Anthropic's official list,
- * and "-thinking" variants cause ProviderModelNotFoundError.
- * The proxy enables thinking mode internally based on model capabilities.
- */
+// Model IDs must not include "-thinking"; OpenCode validates them against
+// Anthropic's public model list and rejects synthetic thinking variants.
 const CANONICAL_MODELS = [
   {
     id: 'claude-opus-4-5',
@@ -35,7 +28,7 @@ const CANONICAL_MODELS = [
   },
 ];
 
-const MODEL_BY_ID = new Map(CANONICAL_MODELS.map(model => [model.id, model]));
+const MODEL_BY_ID = new Map(CANONICAL_MODELS.map((model) => [model.id, model]));
 
 function buildAliasModels() {
   const aliasModels = [];
@@ -49,7 +42,7 @@ function buildAliasModels() {
       if (seen.has(alias)) continue;
       aliasModels.push({
         ...canonicalModel,
-        id: alias
+        id: alias,
       });
       seen.add(alias);
     }
@@ -58,16 +51,13 @@ function buildAliasModels() {
   return aliasModels;
 }
 
-const AVAILABLE_MODELS = [
-  ...CANONICAL_MODELS,
-  ...buildAliasModels()
-];
+const AVAILABLE_MODELS = [...CANONICAL_MODELS, ...buildAliasModels()];
 
 const PROVIDER_PREFIXES = ['anthropic'];
 
 function buildProviderPrefixedModels(models) {
   const prefixedModels = [];
-  const seen = new Set(models.map(model => model.id));
+  const seen = new Set(models.map((model) => model.id));
 
   for (const prefix of PROVIDER_PREFIXES) {
     if (!prefix) continue;
@@ -76,7 +66,7 @@ function buildProviderPrefixedModels(models) {
       if (seen.has(prefixedId)) continue;
       prefixedModels.push({
         ...model,
-        id: prefixedId
+        id: prefixedId,
       });
       seen.add(prefixedId);
     }
@@ -85,19 +75,12 @@ function buildProviderPrefixedModels(models) {
   return prefixedModels;
 }
 
-const ALL_MODELS = [
-  ...AVAILABLE_MODELS,
-  ...buildProviderPrefixedModels(AVAILABLE_MODELS)
-];
+const ALL_MODELS = [...AVAILABLE_MODELS, ...buildProviderPrefixedModels(AVAILABLE_MODELS)];
 
-/**
- * GET /v1/models
- * Returns list of available models
- */
-router.get('/models', (req, res) => {
-  log.info('MODELS ENDPOINT CALLED - returning model list', {
+router.get('/models', (_req, res) => {
+  log.info('Returning model list', {
     count: ALL_MODELS.length,
-    modelIds: ALL_MODELS.map(m => m.id)
+    modelIds: ALL_MODELS.map((m) => m.id),
   });
   res.json({
     object: 'list',
@@ -105,16 +88,11 @@ router.get('/models', (req, res) => {
   });
 });
 
-/**
- * GET /v1/models/:model_id
- * Returns a specific model by ID
- * Supports model IDs with provider prefix (e.g., anthropic/claude-opus-4-5)
- */
 router.get('/models/*', (req, res) => {
   // Handle model IDs that may contain slashes (e.g., anthropic/claude-opus-4-5)
   const rawId = req.params[0];
   const requestedId = stripProviderPrefix(rawId);
-  let model = AVAILABLE_MODELS.find(m => m.id === requestedId);
+  let model = AVAILABLE_MODELS.find((m) => m.id === requestedId);
 
   if (!model) {
     const mapping = resolveModelMapping(requestedId);
@@ -123,7 +101,7 @@ router.get('/models/*', (req, res) => {
       if (canonicalModel) {
         model = {
           ...canonicalModel,
-          id: requestedId
+          id: requestedId,
         };
       }
     }
@@ -135,8 +113,8 @@ router.get('/models/*', (req, res) => {
       type: 'error',
       error: {
         type: 'not_found_error',
-        message: `Model not found: ${rawId}`
-      }
+        message: `Model not found: ${rawId}`,
+      },
     });
   }
 

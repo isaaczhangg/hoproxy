@@ -13,7 +13,7 @@ function resolveCacheTtlMs() {
 }
 
 function isValidSignature(signature) {
-  return typeof signature === "string" && signature.length >= MIN_SIGNATURE_LENGTH;
+  return typeof signature === 'string' && signature.length >= MIN_SIGNATURE_LENGTH;
 }
 
 function cleanupExpired(cache, now = Date.now()) {
@@ -32,7 +32,7 @@ export function cacheToolSignature(toolUseId, signature) {
   const ttlMs = resolveCacheTtlMs();
   toolSignatureCache.set(toolUseId, {
     signature,
-    expiresAt: Date.now() + ttlMs
+    expiresAt: Date.now() + ttlMs,
   });
 }
 
@@ -51,7 +51,7 @@ export function getCachedToolSignature(toolUseId) {
   return entry.signature;
 }
 
-export function cacheThinkingSignature(signature, family = "claude") {
+export function cacheThinkingSignature(signature, family = 'claude') {
   if (!isValidSignature(signature)) {
     return;
   }
@@ -59,7 +59,7 @@ export function cacheThinkingSignature(signature, family = "claude") {
   const ttlMs = resolveCacheTtlMs();
   thinkingSignatureCache.set(signature, {
     family,
-    expiresAt: Date.now() + ttlMs
+    expiresAt: Date.now() + ttlMs,
   });
 }
 
@@ -88,6 +88,6 @@ export function getSignatureCacheSize() {
   cleanupSignatureCache();
   return {
     tool: toolSignatureCache.size,
-    thinking: thinkingSignatureCache.size
+    thinking: thinkingSignatureCache.size,
   };
 }

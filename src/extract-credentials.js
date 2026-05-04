@@ -1,12 +1,7 @@
 #!/usr/bin/env node
-/**
- * CLI script to extract HopGPT credentials from browser session
- * Usage: node src/extract-credentials.js [--env-path <path>] [--timeout <seconds>]
- */
+import path from 'node:path';
 import { extractCredentials } from './services/browserCredentials.js';
-import path from 'path';
 
-// Parse command line arguments
 const args = process.argv.slice(2);
 const options = {};
 
@@ -15,7 +10,7 @@ for (let i = 0; i < args.length; i++) {
     options.envPath = path.resolve(args[i + 1]);
     i++;
   } else if (args[i] === '--timeout' && args[i + 1]) {
-    options.timeout = parseInt(args[i + 1], 10) * 1000; // Convert seconds to ms
+    options.timeout = Number.parseInt(args[i + 1], 10) * 1000;
     i++;
   } else if (args[i] === '--help' || args[i] === '-h') {
     console.log(`
@@ -44,7 +39,6 @@ Example:
   }
 }
 
-// Run extraction
 extractCredentials(options)
   .then(() => {
     console.log('\nYou can now start the proxy server with: npm start\n');

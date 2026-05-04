@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   CloudflareBlockedError,
   NetworkError,
@@ -16,11 +16,6 @@ const DEFAULT_TOKEN_PROVIDER = 'openid';
 // In-process mutex for .env file writes
 let envWritePromise = null;
 
-/**
- * Mask a token for safe logging (show first 10 and last 10 chars)
- * @param {string} token - Token to mask
- * @returns {string} Masked token
- */
 function maskToken(token) {
   if (!token) return '<not set>';
   if (token.length <= 24) return '<too short>';
@@ -52,11 +47,6 @@ function isTestRuntime() {
   );
 }
 
-/**
- * HopGPT API Client
- * Handles authentication and communication with the HopGPT backend
- * Uses node-tls-client to bypass Cloudflare TLS fingerprinting
- */
 export class HopGPTClient {
   constructor(config = {}) {
     this.baseURL = config.baseURL || 'https://chat.ai.jh.edu';
@@ -89,25 +79,18 @@ export class HopGPTClient {
       DEFAULT_PROACTIVE_REFRESH_BUFFER_SEC,
     );
 
-    // Auto-persist credentials to .env after refresh. Disable by default under
-    // test runners so mocked refreshes cannot overwrite a developer's real .env.
+    // Test runners mock refreshes; never let those overwrite a developer's .env.
     this.autoPersist = config.autoPersist ?? !isTestRuntime();
     this.envPath = config.envPath || path.join(process.cwd(), '.env');
 
-    // Rate limiting configuration
     this.rateLimitConfig = {
       maxRetries: config.rateLimitMaxRetries ?? 3,
       baseDelayMs: config.rateLimitBaseDelayMs ?? 1000,
       maxDelayMs: config.rateLimitMaxDelayMs ?? 30000,
-      maxWaitTimeMs: config.rateLimitMaxWaitTimeMs ?? 10000, // Wait for short limits (≤10 sec)
+      maxWaitTimeMs: config.rateLimitMaxWaitTimeMs ?? 10000,
     };
   }
 
-  /**
-   * Extract retry delay from Retry-After header
-   * @param {object} headers - Response headers
-   * @returns {number|null} Delay in milliseconds, or null if not present
-   */
   _extractRetryAfter(headers) {
     if (!headers) {
       return null;
@@ -123,15 +106,13 @@ export class HopGPTClient {
       return null;
     }
 
-    // Retry-After can be either a number of seconds or an HTTP-date
-    const seconds = parseInt(retryAfter, 10);
-    if (!isNaN(seconds)) {
+    const seconds = Number.parseInt(retryAfter, 10);
+    if (!Number.isNaN(seconds)) {
       return seconds * 1000;
     }
 
-    // Try parsing as HTTP-date
     const date = new Date(retryAfter);
-    if (!isNaN(date.getTime())) {
+    if (!Number.isNaN(date.getTime())) {
       const delayMs = date.getTime() - Date.now();
       return Math.max(0, delayMs);
     }
@@ -139,59 +120,34 @@ export class HopGPTClient {
     return null;
   }
 
-  /**
-   * Calculate exponential backoff delay
-   * @param {number} attempt - Current retry attempt (0-indexed)
-   * @param {number|null} retryAfterMs - Retry-After header value in milliseconds
-   * @returns {number} Delay in milliseconds
-   */
   _calculateBackoffDelay(attempt, retryAfterMs) {
-    // If Retry-After is provided and within our max wait time, use it
     if (retryAfterMs !== null && retryAfterMs <= this.rateLimitConfig.maxWaitTimeMs) {
       return retryAfterMs;
     }
 
-    // Otherwise, use exponential backoff: baseDelay * 2^attempt with jitter
     const exponentialDelay = this.rateLimitConfig.baseDelayMs * 2 ** attempt;
-    const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
+    const jitter = Math.random() * 0.3 * exponentialDelay;
     const delay = Math.min(exponentialDelay + jitter, this.rateLimitConfig.maxDelayMs);
 
     return Math.round(delay);
   }
 
-  /**
-   * Sleep for a specified duration
-   * @param {number} ms - Duration in milliseconds
-   */
   async _sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /**
-   * Detect which browser profile to mimic based on the configured User-Agent.
-   * Shared by sendMessage, startStream, and subscribeStream.
-   * @returns {'firefox'|'chrome'}
-   */
   _resolveBrowserType() {
     return this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
   }
 
-  /**
-   * Build browser-like headers to pass Cloudflare bot detection
-   * Headers are ordered to match real browser request patterns
-   * @param {string} browserType - 'firefox' or 'chrome' to match the browser used for cookie extraction
-   * @returns {object} Headers object with browser-like values
-   */
   buildBrowserHeaders(browserType) {
-    // Detect browser type from User-Agent if available
     const detectedBrowser = this.userAgent?.toLowerCase().includes('firefox')
       ? 'firefox'
       : 'chrome';
     const browser = browserType || detectedBrowser;
 
     if (browser === 'firefox') {
-      // Firefox-specific headers (matching HAR capture exactly)
-      const headers = {
+      return {
         'User-Agent':
           this.userAgent ||
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:146.0) Gecko/20100101 Firefox/146.0',
@@ -204,28 +160,25 @@ export class HopGPTClient {
         Priority: 'u=0',
         TE: 'trailers',
       };
-      return headers;
-    } else {
-      // Chrome-specific headers
-      const headers = {
-        'User-Agent':
-          this.userAgent ||
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
-        'Cache-Control': 'no-cache',
-        Pragma: 'no-cache',
-        'Sec-Ch-Ua': '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"macOS"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        Connection: 'keep-alive',
-        Priority: 'u=4, i',
-      };
-      return headers;
     }
+
+    return {
+      'User-Agent':
+        this.userAgent ||
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br, zstd',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      'Sec-Ch-Ua': '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"macOS"',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Connection: 'keep-alive',
+      Priority: 'u=4, i',
+    };
   }
 
   hasRefreshCredential() {
@@ -244,10 +197,6 @@ export class HopGPTClient {
     return 'none';
   }
 
-  /**
-   * Build the cookie header string from configured cookies
-   * @returns {string} Cookie header value
-   */
   buildCookieHeader() {
     const cookies = [];
 
@@ -273,21 +222,12 @@ export class HopGPTClient {
     return cookies.join('; ');
   }
 
-  /**
-   * Parse Set-Cookie headers and update internal cookie state
-   * @param {Headers} headers - Response headers (native fetch Headers object)
-   */
   updateCookiesFromResponse(headers) {
     const setCookieHeaders = headers.getSetCookie?.() || [];
     this._parseCookies(setCookieHeaders);
   }
 
-  /**
-   * Parse Set-Cookie headers from TLS client response
-   * @param {object} headers - Response headers object from TLS client
-   */
   updateCookiesFromTLSResponse(headers) {
-    // TLS client returns headers as an object, Set-Cookie may be a string or array
     let setCookieHeaders = headers['set-cookie'] || headers['Set-Cookie'] || [];
     if (typeof setCookieHeaders === 'string') {
       setCookieHeaders = [setCookieHeaders];
@@ -295,10 +235,6 @@ export class HopGPTClient {
     this._parseCookies(setCookieHeaders);
   }
 
-  /**
-   * Parse cookie strings and update internal state
-   * @param {string[]} setCookieHeaders - Array of Set-Cookie header values
-   */
   _parseCookies(setCookieHeaders) {
     for (const cookieStr of setCookieHeaders) {
       const [cookiePart] = cookieStr.split(';');
@@ -327,10 +263,6 @@ export class HopGPTClient {
     }
   }
 
-  /**
-   * Persist current credentials to .env file
-   * Updates only the token-related variables, preserving other settings
-   */
   async persistCredentials() {
     if (!this.autoPersist) {
       log.debug('Auto-persist disabled, skipping .env write');
@@ -361,7 +293,6 @@ export class HopGPTClient {
         let existingContent = '';
         const preservedLines = [];
 
-        // Variables we will (re-)write on persist.
         const tokenVars = new Set([
           'HOPGPT_BEARER_TOKEN',
           'HOPGPT_COOKIE_CONNECT_SID',
@@ -422,7 +353,6 @@ export class HopGPTClient {
 
         fs.writeFileSync(this.envPath, finalContent);
 
-        // Verify the write by reading back whichever refresh credentials exist.
         const verifyContent = fs.readFileSync(this.envPath, 'utf-8');
         const verifiedSid =
           verifyContent.match(/^HOPGPT_COOKIE_CONNECT_SID=(.+)$/m)?.[1]?.trim() || null;
@@ -462,19 +392,10 @@ export class HopGPTClient {
     return writeOperation;
   }
 
-  /**
-   * Get expiry info for a JWT token
-   * @param {string} token - JWT token
-   * @returns {object|null} Expiry info or null if not a valid JWT
-   */
   _getTokenExpiryInfo(token) {
     return parseTokenExpiry(token);
   }
 
-  /**
-   * Check if bearer token needs proactive refresh
-   * @returns {boolean} True if token should be refreshed
-   */
   _shouldProactivelyRefresh() {
     if (!this.autoRefresh || !this.hasRefreshCredential()) {
       return false;
@@ -489,10 +410,6 @@ export class HopGPTClient {
     return expiryInfo.expiresInSeconds <= this.proactiveRefreshBufferSec;
   }
 
-  /**
-   * Perform proactive token refresh if needed
-   * @returns {Promise<boolean>} True if tokens are valid (refreshed or already valid)
-   */
   async ensureValidToken() {
     if (this._shouldProactivelyRefresh()) {
       const expiryInfo = this._getTokenExpiryInfo(this.bearerToken);
@@ -512,13 +429,6 @@ export class HopGPTClient {
     return true;
   }
 
-  /**
-   * Refresh the bearer token using the HopGPT browser session cookies.
-   * @returns {Promise<boolean>} True if refresh succeeded
-   * @throws {RefreshTokenExpiredError} When refresh token has expired
-   * @throws {CloudflareBlockedError} When blocked by Cloudflare
-   * @throws {NetworkError} When network error occurs
-   */
   async refreshTokens() {
     if (this.refreshPromise) {
       log.info('Waiting for ongoing token refresh');
@@ -536,7 +446,6 @@ export class HopGPTClient {
       try {
         return await this._doRefreshTokens();
       } finally {
-        // Clear the promise only after the operation completes
         this.refreshPromise = null;
       }
     })();
@@ -545,11 +454,6 @@ export class HopGPTClient {
     return refreshOperation;
   }
 
-  /**
-   * Internal method that performs the actual token refresh
-   * @returns {Promise<boolean>} True if refresh succeeded
-   * @private
-   */
   async _doRefreshTokens() {
     log.info('Attempting token refresh', {
       refreshCredentialKind: this.getRefreshCredentialKind(),
@@ -564,11 +468,8 @@ export class HopGPTClient {
     try {
       const url = `${this.baseURL}/api/auth/refresh`;
 
-      // Detect browser type from User-Agent
       const browserType = this.userAgent?.toLowerCase().includes('firefox') ? 'firefox' : 'chrome';
 
-      // Start with browser-like headers to pass Cloudflare
-      // Use the same headers as real browser requests
       const headers = {
         ...this.buildBrowserHeaders(browserType),
         Accept: 'application/json, text/plain, */*',
@@ -578,10 +479,9 @@ export class HopGPTClient {
 
       const cookieHeader = this.buildCookieHeader();
       if (cookieHeader) {
-        headers['Cookie'] = cookieHeader;
+        headers.Cookie = cookieHeader;
       }
 
-      // Use TLS client with browser fingerprint to bypass Cloudflare
       const response = await tlsFetch({
         url,
         method: 'POST',
@@ -686,7 +586,6 @@ export class HopGPTClient {
         });
       }
 
-      // Persist new credentials to .env so they survive server restarts
       await this.persistCredentials();
 
       return true;
@@ -747,7 +646,7 @@ export class HopGPTClient {
     if (typeof response.text === 'function') {
       try {
         return await response.text();
-      } catch (error) {
+      } catch (_error) {
         return '';
       }
     }
@@ -755,14 +654,8 @@ export class HopGPTClient {
     return response.body || '';
   }
 
-  /**
-   * Phase 1 of the HopGPT chat protocol: POST the chat request and parse the
-   * JSON acknowledgment. No retry, no refresh — pure transport.
-   * @param {object} hopGPTRequest - HopGPT-shaped chat request body
-   * @param {object} [requestOptions]
-   * @param {AbortSignal} [requestOptions.signal]
-   * @returns {Promise<{streamId: string, conversationId: string, status: string}>}
-   */
+  // Phase 1 of the HopGPT chat protocol: POST the chat request and parse the
+  // JSON acknowledgment. Retries and refreshes are handled by sendMessage().
   async startStream(hopGPTRequest, requestOptions = {}) {
     if (!hopGPTRequest || typeof hopGPTRequest !== 'object' || Array.isArray(hopGPTRequest)) {
       throw new Error('startStream requires an object hopGPTRequest');
@@ -781,11 +674,11 @@ export class HopGPTClient {
       Referer: `${this.baseURL}/c/new`,
     };
     if (this.bearerToken) {
-      headers['Authorization'] = `Bearer ${this.bearerToken}`;
+      headers.Authorization = `Bearer ${this.bearerToken}`;
     }
     const cookieHeader = this.buildCookieHeader();
     if (cookieHeader) {
-      headers['Cookie'] = cookieHeader;
+      headers.Cookie = cookieHeader;
     }
 
     const response = await tlsFetch({
@@ -811,7 +704,7 @@ export class HopGPTClient {
     let parsed;
     try {
       parsed = JSON.parse(rawBody);
-    } catch (error) {
+    } catch (_error) {
       throw new HopGPTError(502, 'Malformed stream ack from HopGPT', rawBody.slice(0, 500));
     }
 
@@ -826,15 +719,7 @@ export class HopGPTClient {
     };
   }
 
-  /**
-   * Phase 2 of the HopGPT chat protocol: subscribe to the SSE stream for a
-   * previously acknowledged streamId. Returns a fetch-like Response with a
-   * ReadableStream body for SSE parsing. No retry, no refresh — pure transport.
-   * @param {string} streamId - The streamId returned by startStream()
-   * @param {object} [requestOptions]
-   * @param {AbortSignal} [requestOptions.signal]
-   * @returns {Promise<Response|{ok,status,statusText,headers,body,text,json,_rawBody}>}
-   */
+  // Phase 2: subscribe to SSE for a previously acknowledged streamId.
   async subscribeStream(streamId, requestOptions = {}) {
     if (typeof streamId !== 'string' || streamId.trim().length === 0) {
       throw new Error('subscribeStream requires a non-empty streamId');
@@ -853,11 +738,11 @@ export class HopGPTClient {
       Referer: `${this.baseURL}/c/new`,
     };
     if (this.bearerToken) {
-      headers['Authorization'] = `Bearer ${this.bearerToken}`;
+      headers.Authorization = `Bearer ${this.bearerToken}`;
     }
     const cookieHeader = this.buildCookieHeader();
     if (cookieHeader) {
-      headers['Cookie'] = cookieHeader;
+      headers.Cookie = cookieHeader;
     }
 
     const url = `${this.baseURL}${this.streamEndpointPrefix}${encodeURIComponent(streamId)}`;
@@ -923,13 +808,6 @@ export class HopGPTClient {
     return this._createStreamResponse(response);
   }
 
-  /**
-   * Send a message to HopGPT
-   * @param {object} hopGPTRequest - Request body in HopGPT format
-   * @param {object} requestOptions - Request options
-   * @param {object} retryState - Internal retry state
-   * @returns {Response} Fetch-like response object with body as string (SSE data)
-   */
   async sendMessage(hopGPTRequest, requestOptions = {}, retryState = {}) {
     retryState = {
       isAuthRetry: false,
@@ -1010,11 +888,7 @@ export class HopGPTClient {
     return this._subscribeWithRetry(ack, requestOptions, retryState);
   }
 
-  /**
-   * Post-ack retry wrapper around subscribeStream. Never re-POSTs; reuses the
-   * same streamId across retries. Ref: spec §"Post-ack error handling".
-   * @private
-   */
+  // Post-ack retries must reuse the same streamId; never re-POST after ack.
   async _subscribeWithRetry(ack, requestOptions, retryState) {
     const signal = requestOptions.signal;
     try {
@@ -1071,19 +945,11 @@ export class HopGPTClient {
     }
   }
 
-  /**
-   * Create a fetch-like Response object from TLS client response
-   * Converts the string body to a ReadableStream for SSE parsing
-   * @param {object} tlsResponse - TLS client response
-   * @returns {object} Fetch-like Response object
-   */
   _createStreamResponse(tlsResponse) {
     const body = tlsResponse.body || '';
 
-    // Create a ReadableStream from the string
     const stream = new ReadableStream({
       start(controller) {
-        // Encode the string as bytes and enqueue
         const encoder = new TextEncoder();
         controller.enqueue(encoder.encode(body));
         controller.close();
@@ -1096,17 +962,12 @@ export class HopGPTClient {
       statusText: tlsResponse.statusText,
       headers: tlsResponse.headers,
       body: stream,
-      // Also provide the raw body text for non-streaming use
       _rawBody: body,
       text: async () => body,
       json: async () => JSON.parse(body),
     };
   }
 
-  /**
-   * Validate that required authentication is configured
-   * @returns {object} Validation result with status and missing fields
-   */
   validateAuth() {
     const missing = [];
     const warnings = [];
@@ -1141,7 +1002,6 @@ export class HopGPTClient {
       );
     }
 
-    // Bearer token is optional if refresh credentials are available.
     if (!this.bearerToken) {
       if (hasRefreshCredential) {
         warnings.push('HOPGPT_BEARER_TOKEN not set; will attempt to refresh on first request');
@@ -1160,9 +1020,6 @@ export class HopGPTClient {
   }
 }
 
-/**
- * Custom error class for HopGPT API errors
- */
 export class HopGPTError extends Error {
   constructor(statusCode, message, responseBody = null, retryAfterMs = null) {
     super(message);
@@ -1172,10 +1029,6 @@ export class HopGPTError extends Error {
     this.retryAfterMs = retryAfterMs;
   }
 
-  /**
-   * Convert to Anthropic-compatible error format
-   * @returns {object} Anthropic error response
-   */
   toAnthropicError() {
     let errorType = 'api_error';
 
@@ -1197,7 +1050,6 @@ export class HopGPTError extends Error {
       },
     };
 
-    // Include retry-after information for rate limit errors
     if (this.statusCode === 429 && this.retryAfterMs !== null) {
       error.error.retry_after_seconds = Math.ceil(this.retryAfterMs / 1000);
     }
@@ -1206,7 +1058,6 @@ export class HopGPTError extends Error {
   }
 }
 
-// Export a default client instance
 let defaultClient = null;
 
 export function getDefaultClient() {
@@ -1220,11 +1071,6 @@ export function resetDefaultClient() {
   defaultClient = null;
 }
 
-/**
- * Parse JWT token and extract expiry information
- * @param {string} token - JWT token
- * @returns {object|null} Expiry info or null if not a valid JWT
- */
 export function getTokenExpiryInfo(token) {
   const expiry = parseTokenExpiry(token);
   if (!expiry) {
@@ -1276,7 +1122,7 @@ function parseTokenExpiry(token) {
       expiresInSeconds,
       isExpired: expiresInSeconds <= 0,
     };
-  } catch (error) {
+  } catch (_error) {
     return null;
   }
 }

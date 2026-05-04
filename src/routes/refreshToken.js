@@ -1,6 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Router } from 'express';
-import fs from 'fs';
-import path from 'path';
 import {
   AuthError,
   CloudflareBlockedError,
@@ -14,9 +14,6 @@ import { loggers } from '../utils/logger.js';
 const log = loggers.auth;
 const router = Router();
 
-/**
- * Mask a token for safe display (show first 10 and last 10 chars)
- */
 function maskToken(token) {
   if (!token) return '<not set>';
   if (token.length <= 24) return '<too short to mask>';
@@ -45,11 +42,7 @@ function refreshCredentialKind(client) {
   return 'none';
 }
 
-/**
- * GET /token-status
- * Get current token expiry status without triggering a refresh
- */
-router.get('/token-status', (req, res) => {
+router.get('/token-status', (_req, res) => {
   const client = getDefaultClient();
   log.debug('Checking token status');
 
@@ -98,11 +91,7 @@ router.get('/token-status', (req, res) => {
   res.json(status);
 });
 
-/**
- * POST /refresh-token
- * Manually refresh HopGPT session tokens
- */
-router.post('/refresh-token', async (req, res) => {
+router.post('/refresh-token', async (_req, res) => {
   const client = getDefaultClient();
   log.info('Manual token refresh requested');
 
@@ -161,12 +150,7 @@ router.post('/refresh-token', async (req, res) => {
 
 export default router;
 
-/**
- * GET /token-debug
- * Detailed token diagnostics for debugging auth issues
- * Compares in-memory state with .env file
- */
-router.get('/token-debug', (req, res) => {
+router.get('/token-debug', (_req, res) => {
   const client = getDefaultClient();
   const envPath = path.join(process.cwd(), '.env');
   log.debug('Token debug requested');

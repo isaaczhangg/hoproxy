@@ -70,13 +70,6 @@ export function getToolChoiceConfig(toolChoice) {
   return config;
 }
 
-/**
- * Build a tool injection prompt that tells the model about available tools
- * and how to call them using XML format that we can parse.
- * @param {Array} tools - Normalized tools array
- * @param {object} toolChoice - Anthropic tool_choice
- * @returns {string} Tool injection prompt
- */
 function buildToolInjectionPrompt(tools, toolChoice) {
   if (!tools || !Array.isArray(tools) || tools.length === 0) {
     return '';
@@ -126,7 +119,6 @@ function buildToolInjectionPrompt(tools, toolChoice) {
     }
   }
 
-  // Add tool choice guidance
   if (toolChoiceConfig.forcedToolName) {
     prompt += `\nYou MUST use the "${toolChoiceConfig.forcedToolName}" tool in your response.\n`;
   } else if (toolChoiceConfig.mustUseTool) {
@@ -541,11 +533,6 @@ function formatSchemaDetailLines(schema, depth = 0) {
   return lines;
 }
 
-/**
- * Transform Anthropic tool definitions to HopGPT format
- * @param {Array} tools - Anthropic tools array
- * @returns {Array} HopGPT tools array
- */
 export function transformTools(tools) {
   const normalizedTools = normalizeToolDefinitions(tools);
   if (normalizedTools.length === 0) {
@@ -560,11 +547,6 @@ export function transformTools(tools) {
   }));
 }
 
-/**
- * Transform Anthropic tool_choice to HopGPT format
- * @param {object|string} toolChoice - Anthropic tool_choice
- * @returns {object|null} HopGPT tool choice config
- */
 export function transformToolChoice(toolChoice) {
   if (!toolChoice) {
     return null;
@@ -574,7 +556,6 @@ export function transformToolChoice(toolChoice) {
   const applyDisableParallel = (value) =>
     toolChoiceConfig.disableParallelToolUse ? { ...value, disable_parallel_tool_use: true } : value;
 
-  // Handle string shortcuts
   if (typeof toolChoice === 'string') {
     if (toolChoice === 'auto') {
       return applyDisableParallel({ type: 'auto' });
@@ -590,7 +571,6 @@ export function transformToolChoice(toolChoice) {
     }
   }
 
-  // Handle object format
   if (typeof toolChoice === 'object') {
     if (toolChoice.type === 'auto') {
       return applyDisableParallel({ type: 'auto' });
@@ -615,22 +595,12 @@ export function transformToolChoice(toolChoice) {
   return null;
 }
 
-/**
- * Format a tool_use block for conversation context
- * @param {object} block - tool_use content block
- * @returns {string} Formatted string representation
- */
 function formatToolUseBlock(block) {
   const inputStr =
     typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2);
   return `<tool_use id="${block.id}" name="${block.name}">\n${inputStr}\n</tool_use>`;
 }
 
-/**
- * Format a tool_result block for conversation context
- * @param {object} block - tool_result content block
- * @returns {string} Formatted string representation
- */
 function formatToolResultBlock(block) {
   let content = '';
   if (typeof block.content === 'string') {
@@ -655,11 +625,6 @@ function formatToolResultBlock(block) {
   return `<tool_result tool_use_id="${block.tool_use_id}"${errorAttr}>\n${content}\n</tool_result>`;
 }
 
-/**
- * Extract content from a message, handling all content block types
- * @param {object} message - Anthropic message
- * @returns {string} Extracted text content
- */
 function extractMessageContent(message) {
   if (typeof message.content === 'string') {
     return message.content;
@@ -678,7 +643,6 @@ function extractMessageContent(message) {
     } else if (block.type === 'tool_result') {
       parts.push(formatToolResultBlock(block));
     }
-    // Skip thinking blocks - they are internal model reasoning
   }
 
   return parts.join('\n\n');
@@ -729,15 +693,9 @@ export function normalizeStopSequences(value) {
   return [];
 }
 
-/**
- * Extract thinking configuration from Anthropic request
- * @param {object} anthropicRequest - Anthropic API request body
- * @returns {object} Thinking configuration {enabled, budgetTokens}
- */
 export function extractThinkingConfig(anthropicRequest) {
   const { model, thinking } = anthropicRequest;
 
-  // Check explicit thinking parameter
   if (thinking) {
     return {
       enabled: thinking.type === 'enabled',
@@ -745,7 +703,6 @@ export function extractThinkingConfig(anthropicRequest) {
     };
   }
 
-  // Auto-detect from model name
   return {
     enabled: isThinkingModel(model),
     budgetTokens: null,
@@ -858,12 +815,6 @@ function collectImagesFromMessages(messages, imageDetail) {
   return images;
 }
 
-/**
- * Transform Anthropic Messages API request to HopGPT format
- * @param {object} anthropicRequest - Anthropic API request body
- * @param {object} conversationState - Optional conversation state for multi-turn
- * @returns {object} HopGPT request body
- */
 export function transformAnthropicToHopGPT(anthropicRequest, conversationState = null) {
   const {
     model,
@@ -895,7 +846,6 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
   const toolCallStopSequence = '<|hopgpt_tool_stop|>';
   const normalizedTools = normalizeToolDefinitions(tools);
 
-  // Get thinking configuration
   const thinkingConfig = extractThinkingConfig(anthropicRequest);
   const processedMessages = prepareMessagesForThinking(messages, {
     targetFamily: 'claude',
@@ -912,16 +862,13 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
   const systemChanged = normalizedSystem && stateSystem && normalizedSystem !== stateSystem;
   const isNewConversation = !conversationState?.lastAssistantMessageId;
 
-  // Get the latest user message
   const latestMessage = processedMessages[processedMessages.length - 1];
 
-  // Build text content - handle all content block types including tool_result
   let text = '';
   let images = [];
   if (typeof latestMessage.content === 'string') {
     text = latestMessage.content;
   } else if (Array.isArray(latestMessage.content)) {
-    // Extract text from content blocks (skip thinking blocks in user messages)
     const extracted = extractTextAndImages(latestMessage.content, imageDetail);
     text = extracted.text;
     images = extracted.images;
@@ -964,21 +911,17 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
     }
   }
 
-  // Inject tool definitions into the prompt if tools are provided
   // This is necessary because HopGPT doesn't pass tools to the model natively
   const toolInjection = buildToolInjectionPrompt(normalizedTools, tool_choice);
   if (toolInjection) {
     text = text + toolInjection;
   }
 
-  // Get parent message ID for conversation threading
   const parentMessageId =
     conversationState?.lastAssistantMessageId || '00000000-0000-0000-0000-000000000000';
 
-  // Generate timestamp in HopGPT format
   const clientTimestamp = new Date().toISOString().slice(0, 19);
 
-  // Build base request
   const hopGPTRequest = {
     text,
     sender: 'User',
@@ -1035,19 +978,16 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
 
   hopGPTRequest.stop_sequences = stopSequences;
 
-  // Add tools if provided
   const transformedTools = transformTools(normalizedTools);
   if (transformedTools) {
     hopGPTRequest.tools = transformedTools;
   }
 
-  // Add tool_choice if provided
   const transformedToolChoice = transformToolChoice(tool_choice);
   if (transformedToolChoice) {
     hopGPTRequest.tool_choice = transformedToolChoice;
   }
 
-  // Add reasoning/thinking parameters based on thinking config
   if (thinkingConfig.enabled) {
     hopGPTRequest.reasoning_effort = 'high';
     hopGPTRequest.reasoning_summary = 'detailed';
@@ -1070,14 +1010,6 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
   return hopGPTRequest;
 }
 
-/**
- * Build conversation history text for multi-turn conversations
- * HopGPT handles conversation state server-side via parentMessageId,
- * but for context we can include previous messages in the text if needed
- *
- * Note: Thinking blocks from previous assistant messages are excluded
- * as they are internal model reasoning and should not be in conversation text
- */
 export function buildConversationText(messages, system = null) {
   const parts = [];
   const systemText = normalizeSystemPrompt(system);
@@ -1098,11 +1030,6 @@ export function buildConversationText(messages, system = null) {
   return parts.join('\n\n');
 }
 
-/**
- * Check if a message contains thinking blocks
- * @param {object} message - Anthropic message object
- * @returns {boolean} True if message contains thinking content
- */
 export function hasThinkingContent(message) {
   if (!message || !Array.isArray(message.content)) {
     return false;
@@ -1110,12 +1037,6 @@ export function hasThinkingContent(message) {
   return message.content.some((block) => block.type === 'thinking');
 }
 
-/**
- * Extract thinking signature from a message
- * Used for interleaved thinking in multi-turn conversations
- * @param {object} message - Anthropic message object
- * @returns {string|null} The thinking signature if present
- */
 export function extractThinkingSignature(message) {
   if (!message || !Array.isArray(message.content)) {
     return null;

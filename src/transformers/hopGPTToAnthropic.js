@@ -5,27 +5,13 @@ import { cacheThinkingSignature, cacheToolSignature } from './signatureCache.js'
 
 const log = loggers.transform;
 
-// Pattern for <mcp_tool_call> blocks
-const MCP_TOOL_CALL_BLOCK_RE = /<mcp_tool_call\b[\s\S]*?<\/mcp_tool_call>/gi;
 const MCP_TOOL_CALL_START_TAG = '<mcp_tool_call';
 
-// Pattern for <function_calls> blocks (used by OpenCode)
-// Also matches <function_calls> used by Claude Code
-const FUNCTION_CALLS_BLOCK_RE =
-  /<(?:antml:)?function_calls\b[\s\S]*?<\/(?:antml:)?function_calls>/gi;
 const FUNCTION_CALLS_START_TAG = '<function_calls';
 const ANTML_FUNCTION_CALLS_START_TAG = '<antml:function_calls';
 
-// Pattern for <tool_call> blocks with JSON (another OpenCode format)
-const TOOL_CALL_JSON_BLOCK_RE = /<tool_call\b[\s\S]*?<\/tool_call>/gi;
-const TOOL_CALL_JSON_START_TAG = '<tool_call';
-
-// Pattern for <tool_use> blocks with JSON-like content (Anthropic style in text)
 const TOOL_USE_START_TAG = '<tool_use';
 
-// Pattern for standalone <invoke> blocks
-// Also matches <invoke> used by Claude Code
-const INVOKE_BLOCK_RE = /<(?:antml:)?invoke\b[\s\S]*?<\/(?:antml:)?invoke>/gi;
 const INVOKE_START_TAG = '<invoke';
 const ANTML_INVOKE_START_TAG = '<antml:invoke';
 
@@ -56,7 +42,6 @@ const TOOL_TAG_CLOSINGS = {
   tool_use: ['</tool_use>', '</tool_call>'],
 };
 
-// Helper function to parse environment variable as positive integer
 function parsePositiveInt(envVar, defaultValue) {
   const parsed = Number.parseInt(envVar, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
@@ -446,28 +431,6 @@ function extractToolCallSegments(text) {
   return { segments, lastIndex: index };
 }
 
-function extractXmlTagValue(source, tagName) {
-  if (!source) {
-    return null;
-  }
-  const matcher = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i');
-  const match = source.match(matcher);
-  return match ? match[1].trim() : null;
-}
-
-function extractXmlTagValueFlexible(source, tagName, fallbackTagName) {
-  const value = extractXmlTagValue(source, tagName);
-  if (value !== null) {
-    return value;
-  }
-  if (!source || !fallbackTagName) {
-    return null;
-  }
-  const matcher = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${fallbackTagName}>`, 'i');
-  const match = source.match(matcher);
-  return match ? match[1].trim() : null;
-}
-
 function extractXmlTagValueSafe(source, tagName) {
   if (!source) {
     return null;
@@ -536,7 +499,7 @@ function extractXmlAttribute(source, tagName, attrName) {
           value += ch;
         } else {
           // Keep the backslash for other escapes (like \n, \t)
-          value += '\\' + ch;
+          value += `\\${ch}`;
         }
         escaped = false;
         continue;
@@ -766,7 +729,7 @@ function parseJsonWithRepair(jsonText) {
   for (const attempt of attempts) {
     try {
       return JSON.parse(attempt);
-    } catch (error) {}
+    } catch (_error) {}
   }
 
   return null;
@@ -897,7 +860,7 @@ function normalizeQuestionsInput(input) {
   return { ...input, questions: normalizedQuestions };
 }
 
-function normalizeToolInput(toolName, input) {
+function normalizeToolInput(input) {
   if (!input || typeof input !== 'object') {
     return input;
   }
@@ -1106,8 +1069,8 @@ function repairMalformedArrayJson(jsonStr) {
   // Apply modifications in reverse order to preserve positions
   modifications.sort((a, b) => b.insertCloseBracket - a.insertCloseBracket);
   for (const mod of modifications) {
-    result = result.slice(0, mod.insertCloseBracket) + ']' + result.slice(mod.insertCloseBracket);
-    result = result.slice(0, mod.insertOpenBracket) + '[' + result.slice(mod.insertOpenBracket);
+    result = `${result.slice(0, mod.insertCloseBracket)}]${result.slice(mod.insertCloseBracket)}`;
+    result = `${result.slice(0, mod.insertOpenBracket)}[${result.slice(mod.insertOpenBracket)}`;
   }
 
   return result;
@@ -1708,7 +1671,6 @@ function splitStreamTextForMcpToolCalls(text) {
     return { segments, remainder: potentialRemainder };
   }
 
-  // Check for partial tag at end (e.g., "<mcp_tool" or "<function" or "<tool_c" or "<")
   const lastLt = trailing.lastIndexOf('<');
   if (lastLt !== -1) {
     const possibleTag = trailing.slice(lastLt);
@@ -1725,28 +1687,17 @@ function splitStreamTextForMcpToolCalls(text) {
   return { segments, remainder: '' };
 }
 
-/**
- * Check if a model supports extended thinking
- * @param {string} model - Model name
- * @returns {boolean} True if model supports thinking
- */
 export function isThinkingModel(model) {
   if (!model) return false;
   const modelLower = model.toLowerCase();
-  // Models with "-thinking" suffix or explicit thinking models
   return (
     modelLower.includes('-thinking') ||
     modelLower.includes('thinking') ||
-    // Claude Opus 4.5 models may support thinking with explicit parameter
     modelLower.includes('opus-4.5') ||
     modelLower.includes('opus-4-5')
   );
 }
 
-/**
- * Generate a unique tool use ID in Anthropic format
- * @returns {string} Tool use ID like toolu_01XFDUDYJgAACzvnptvVoYEL
- */
 function generateToolUseId() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let result = 'toolu_01';
@@ -1795,10 +1746,6 @@ function mapStopReason(value) {
   return null;
 }
 
-/**
- * Transformer class to convert HopGPT SSE events to Anthropic SSE format
- * Supports extended thinking and tool use for compatible models
- */
 export class HopGPTToAnthropicTransformer {
   constructor(model = 'claude-sonnet-4-20250514', options = {}) {
     this.messageId = `msg_${uuidv4().replace(/-/g, '').slice(0, 24)}`;
@@ -1810,27 +1757,24 @@ export class HopGPTToAnthropicTransformer {
     this.responseMessageId = null;
     this.systemPrompt = options.systemPrompt ?? null;
 
-    // Thinking support
     this.thinkingEnabled = options.thinkingEnabled ?? isThinkingModel(model);
     this.suppressThinking = options.suppressThinking ?? false;
-    this.currentBlockIndex = -1; // Will be incremented when blocks start
-    this.currentBlockType = null; // 'thinking', 'text', or 'tool_use'
-    this.blockStarted = false; // Track if current block has started
+    this.currentBlockIndex = -1;
+    this.currentBlockType = null;
+    this.blockStarted = false;
     this.hasEmittedNonThinkingContent = false;
 
-    // Accumulated content for non-streaming responses
-    this.contentBlocks = []; // Array of {type, content, signature?}
-    this.accumulatedText = ''; // For backward compatibility
+    this.contentBlocks = [];
+    this.accumulatedText = '';
     this.accumulatedThinking = '';
     this.thinkingSignature = null;
     this.mcpToolCallBuffer = '';
     this._toolBufferWarningEmitted = false;
     this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
 
-    // Tool use support
-    this.currentToolUse = null; // Current tool use being streamed {id, name, inputJson}
-    this.accumulatedToolUses = []; // All completed tool uses
-    this.hasToolUse = false; // Track if response contains tool use
+    this.currentToolUse = null;
+    this.accumulatedToolUses = [];
+    this.hasToolUse = false;
 
     // MCP tool call passthrough mode - when enabled, <mcp_tool_call> blocks are
     // passed through as text instead of being converted to tool_use blocks.
@@ -1874,11 +1818,6 @@ export class HopGPTToAnthropicTransformer {
     this.hopGPTStopSequence = null;
   }
 
-  /**
-   * Transform a HopGPT SSE event to Anthropic SSE event(s)
-   * @param {object} event - Parsed SSE event with 'event' and 'data' fields
-   * @returns {Array|null} Array of Anthropic SSE events or null if event should be skipped
-   */
   transformEvent(event) {
     try {
       const data = JSON.parse(event.data);
@@ -1892,7 +1831,6 @@ export class HopGPTToAnthropicTransformer {
   }
 
   _transformData(data) {
-    // Event type 1: Initial message created
     if (data.created && data.message) {
       const createdMessageId = data.message?.messageId || data.message?.id;
       if (createdMessageId && !this.responseMessageId && isAssistantCreatedMessage(data.message)) {
@@ -1906,18 +1844,15 @@ export class HopGPTToAnthropicTransformer {
       return this._createMessageStart();
     }
 
-    // Event type 2: on_run_step - skip (internal HopGPT event)
     if (data.event === 'on_run_step') {
       return null;
     }
 
-    // Event type 3: on_message_delta - content chunks (text or thinking)
     if (data.event === 'on_message_delta') {
       const deltaContent = data.data?.delta?.content;
       if (deltaContent && deltaContent.length > 0) {
         const events = [];
 
-        // Process all content blocks (may include thinking and text)
         for (const block of deltaContent) {
           const blockEvents = this._processContentBlock(block);
           if (blockEvents) {
@@ -1925,7 +1860,6 @@ export class HopGPTToAnthropicTransformer {
           }
         }
 
-        // Also check for thoughtSignature in the delta
         if (data.data?.delta?.thoughtSignature) {
           this.thinkingSignature = data.data.delta.thoughtSignature;
           cacheThinkingSignature(this.thinkingSignature, 'claude');
@@ -1956,7 +1890,6 @@ export class HopGPTToAnthropicTransformer {
       return null;
     }
 
-    // Event type 4: final - end of stream
     if (data.final) {
       const finalConversationId = data.conversation?.conversationId;
       if (finalConversationId) {
@@ -1977,13 +1910,11 @@ export class HopGPTToAnthropicTransformer {
       this.hopGPTStopSequence =
         data.responseMessage?.stopSequence ?? data.responseMessage?.stop_sequence ?? null;
 
-      // Check for thoughtSignature in final response
       if (data.responseMessage?.thoughtSignature) {
         this.thinkingSignature = data.responseMessage.thoughtSignature;
         cacheThinkingSignature(this.thinkingSignature, 'claude');
       }
 
-      // Extract content blocks from final message for non-streaming
       const finalContent = this._normalizeFinalContent(data.responseMessage);
       if (finalContent) {
         this._extractFinalContent(finalContent);
@@ -2129,9 +2060,6 @@ export class HopGPTToAnthropicTransformer {
     return sanitizeTextFull(remaining);
   }
 
-  /**
-   * Process a single content block from delta
-   */
   _processContentBlock(block) {
     const events = [];
     const isTextBlock = block.type === 'text' && typeof block.text === 'string';
@@ -2190,7 +2118,6 @@ export class HopGPTToAnthropicTransformer {
       return events;
     }
 
-    // Handle text blocks
     if (block.type === 'text' && block.text) {
       events.push(
         ...this._processTextBlock(block.text, {
@@ -2203,7 +2130,6 @@ export class HopGPTToAnthropicTransformer {
       return events.length > 0 ? events : null;
     }
 
-    // Handle tool_use blocks
     if (block.type === 'tool_use') {
       if (block.thoughtSignature && block.id) {
         cacheToolSignature(block.id, block.thoughtSignature);
@@ -2214,9 +2140,6 @@ export class HopGPTToAnthropicTransformer {
     return null;
   }
 
-  /**
-   * Extract content blocks from final message
-   */
   _extractFinalContent(content) {
     let stopAfterTool = false;
     for (const [index, block] of content.entries()) {
@@ -2309,15 +2232,14 @@ export class HopGPTToAnthropicTransformer {
         this.hasToolUse = true;
         let input = block.input;
 
-        // Parse input if it's a string
         if (typeof input === 'string') {
           try {
             input = JSON.parse(input);
-          } catch (e) {
+          } catch (_e) {
             input = { _raw: input };
           }
         }
-        input = normalizeToolInput(block.name, input);
+        input = normalizeToolInput(input);
 
         this.contentBlocks.push({
           type: 'tool_use',
@@ -2479,7 +2401,6 @@ export class HopGPTToAnthropicTransformer {
       return events;
     }
 
-    // In passthrough mode, don't parse MCP tool calls - just emit text as-is.
     if (this.mcpPassthrough) {
       events.push(...this._emitTextDelta(sanitizedText));
       return events;
@@ -2593,7 +2514,6 @@ export class HopGPTToAnthropicTransformer {
     }
 
     if (this.blockStarted && this.currentBlockType !== 'text') {
-      // Save tool use before switching away from tool_use block
       if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
         this.accumulatedToolUses.push({ ...this.currentToolUse });
         this.currentToolUse = null;
@@ -2706,12 +2626,12 @@ export class HopGPTToAnthropicTransformer {
         }
         const normalizedInput =
           parsedInput && typeof parsedInput === 'object'
-            ? normalizeToolInput(toolName, parsedInput)
+            ? normalizeToolInput(parsedInput)
             : { _raw: block.input };
         inputDelta = JSON.stringify(normalizedInput);
         this.currentToolUse.inputJson = inputDelta;
       } else if (typeof block.input === 'object') {
-        const normalizedInput = normalizeToolInput(toolName, block.input);
+        const normalizedInput = normalizeToolInput(block.input);
         inputDelta = JSON.stringify(normalizedInput);
         this.currentToolUse.inputJson = inputDelta;
       }
@@ -2818,7 +2738,6 @@ export class HopGPTToAnthropicTransformer {
     }
     this.hasStarted = true;
 
-    // Just emit message_start, blocks will be started as content arrives
     return [
       {
         event: 'message_start',
@@ -2842,15 +2761,11 @@ export class HopGPTToAnthropicTransformer {
     ];
   }
 
-  /**
-   * Create a content block start event
-   */
   _createBlockStart(blockType, toolUseInfo = null) {
     this.currentBlockIndex++;
     this.currentBlockType = blockType;
     this.blockStarted = true;
 
-    // Ensure message has started
     const events = [];
     if (!this.hasStarted) {
       const startEvents = this._createMessageStart();
@@ -2901,9 +2816,6 @@ export class HopGPTToAnthropicTransformer {
     return events.length === 1 ? events[0] : events;
   }
 
-  /**
-   * Create a content block stop event
-   */
   _createBlockStopEvents() {
     const events = [];
     if (this.currentBlockType === 'thinking' && this.thinkingSignature) {
@@ -2936,11 +2848,9 @@ export class HopGPTToAnthropicTransformer {
   }
 
   _createContentDelta(text) {
-    // Legacy method for backward compatibility
     const events = [];
     this.hasEmittedNonThinkingContent = true;
 
-    // Ensure message and text block have started
     if (!this.hasStarted) {
       const startEvents = this._createMessageStart();
       if (startEvents) events.push(...startEvents);
@@ -2975,7 +2885,6 @@ export class HopGPTToAnthropicTransformer {
     const { allowSuppressedThinkingFallback = false } = options;
     const events = [];
 
-    // Mark that we're emitting message_stop
     this._hasEmittedMessageStop = true;
     this._suppressOutput = true;
 
@@ -3007,7 +2916,6 @@ export class HopGPTToAnthropicTransformer {
       }
     }
 
-    // Flush any remaining buffered MCP tool calls
     if (this.mcpToolCallBuffer && !this.mcpPassthrough) {
       const segments = splitMcpToolCalls(this.mcpToolCallBuffer, true);
       for (const segment of segments) {
@@ -3025,12 +2933,10 @@ export class HopGPTToAnthropicTransformer {
       this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
     }
 
-    // Save current tool use if still in progress
     if (this.currentBlockType === 'tool_use' && this.currentToolUse) {
       this.accumulatedToolUses.push({ ...this.currentToolUse });
     }
 
-    // Close any open content block
     if (this.blockStarted) {
       events.push(...this._createBlockStopEvents());
     }
@@ -3056,7 +2962,6 @@ export class HopGPTToAnthropicTransformer {
 
     const { stopReason, stopSequence } = this._determineStopInfo();
 
-    // Add message_delta with stop reason
     events.push({
       event: 'message_delta',
       data: {
@@ -3071,7 +2976,6 @@ export class HopGPTToAnthropicTransformer {
       },
     });
 
-    // Add message_stop
     events.push({
       event: 'message_stop',
       data: {
@@ -3222,30 +3126,23 @@ export class HopGPTToAnthropicTransformer {
 
   _buildToolUseFromCall(toolCall) {
     const resolved = this._resolveToolCall(toolCall);
-    if (!resolved || !resolved.name) {
+    if (!resolved?.name) {
       return null;
     }
     return {
       type: 'tool_use',
       id: resolved.toolUseId || generateToolUseId(),
       name: resolved.name,
-      input: normalizeToolInput(resolved.name, resolved.input),
+      input: normalizeToolInput(resolved.input),
     };
   }
 
-  /**
-   * Build a complete non-streaming response from accumulated data
-   * @returns {object} Anthropic Messages API response
-   */
   buildNonStreamingResponse() {
-    // Build content array, preferring extracted blocks or falling back to accumulated
     let content = [];
 
     if (this.contentBlocks.length > 0) {
-      // Use extracted content blocks from final message
       content = this.contentBlocks;
     } else {
-      // Fall back to accumulated content
       if (this.accumulatedThinking && !this.suppressThinking) {
         const thinkingBlock = {
           type: 'thinking',
@@ -3264,7 +3161,6 @@ export class HopGPTToAnthropicTransformer {
         });
       }
 
-      // Add accumulated tool uses
       const toolUses = [...this.accumulatedToolUses];
       if (
         this.currentToolUse &&
@@ -3278,11 +3174,11 @@ export class HopGPTToAnthropicTransformer {
         if (toolUse.inputJson) {
           try {
             input = JSON.parse(toolUse.inputJson);
-          } catch (e) {
+          } catch (_e) {
             input = { _raw: toolUse.inputJson };
           }
         }
-        input = normalizeToolInput(toolUse.name, input);
+        input = normalizeToolInput(input);
         content.push({
           type: 'tool_use',
           id: toolUse.id,
@@ -3291,7 +3187,6 @@ export class HopGPTToAnthropicTransformer {
         });
       }
 
-      // If no content at all, add empty text block
       if (content.length === 0) {
         content.push({
           type: 'text',
@@ -3317,10 +3212,6 @@ export class HopGPTToAnthropicTransformer {
     };
   }
 
-  /**
-   * Get conversation state for multi-turn conversations
-   * @returns {object} Conversation state
-   */
   getConversationState() {
     return {
       conversationId: this.conversationId,
@@ -3329,39 +3220,23 @@ export class HopGPTToAnthropicTransformer {
     };
   }
 
-  /**
-   * Check if the stream has been properly terminated with message_stop
-   * @returns {boolean} True if message_stop has been emitted
-   */
   hasEnded() {
     return this._hasEmittedMessageStop === true;
   }
 
-  /**
-   * Force cleanup and emit message_stop if the stream ends without a final event
-   * This ensures clients always receive a proper termination signal
-   * @returns {Array} Array of cleanup SSE events to emit
-   */
   forceEnd() {
-    // If we've already emitted message_stop, don't do it again
     if (this._hasEmittedMessageStop) {
       return [];
     }
 
     log.debug('Forcing stream end - no final event received from HopGPT');
 
-    // Use _createMessageStop to properly flush buffer, close blocks, and emit events
     const events = this._createMessageStop();
     this._hasEmittedMessageStop = true;
     return events;
   }
 }
 
-/**
- * Format SSE event for writing to response
- * @param {object} event - Event with 'event' and 'data' fields
- * @returns {string} Formatted SSE string
- */
 export function formatSSEEvent(event) {
   return `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`;
 }

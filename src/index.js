@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
 import messagesRouter from './routes/messages.js';
 import modelsRouter from './routes/models.js';
 import refreshTokenRouter from './routes/refreshToken.js';
@@ -11,20 +11,12 @@ import { createLogger, requestLoggerMiddleware } from './utils/logger.js';
 
 const log = createLogger('Server');
 
-/**
- * Mask a token for safe logging (show first 10 and last 10 chars)
- * @param {string} token - Token to mask
- * @returns {string} Masked token
- */
 function maskToken(token) {
   if (!token) return '<not set>';
   if (token.length <= 24) return '<too short to mask>';
   return `${token.substring(0, 10)}...${token.substring(token.length - 10)}`;
 }
 
-/**
- * Log startup token diagnostics to help debug auth issues
- */
 function logStartupTokenDiagnostics() {
   const client = getDefaultClient();
   const envPath = path.join(process.cwd(), '.env');
@@ -149,10 +141,8 @@ function logStartupTokenDiagnostics() {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
 app.use(express.json({ limit: '10mb' }));
 
-// CORS headers for API access
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -168,20 +158,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// Request logging with tracing
 app.use(requestLoggerMiddleware());
 
-// Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Mount Anthropic-compatible API routes
 app.use('/v1', messagesRouter);
 app.use('/v1', modelsRouter);
 app.use(refreshTokenRouter);
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     type: 'error',
@@ -192,8 +178,7 @@ app.use((req, res) => {
   });
 });
 
-// Error handler
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => {
   log.error('Unhandled error', {
     requestId: req.id,
     error: err.message,
@@ -208,11 +193,9 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
 app.listen(PORT, () => {
   log.info(`Server started on port ${PORT}`);
 
-  // Log token diagnostics on startup
   logStartupTokenDiagnostics();
 
   console.log(`
