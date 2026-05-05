@@ -157,7 +157,7 @@ During extraction, HoProxy validates the browser session by making a real in-bro
 HoProxy keeps HopGPT conversation threading in memory so multi-turn calls reuse context:
 
 - Pass a stable session key via the `X-Session-Id` request header or any of `metadata.{session_id,sessionId,conversation_id,conversationId}`.
-- Omit it and the proxy generates a one-off key, echoed back as `X-Session-Id` on the response. If your client does not return that key, HoProxy treats the next request as stateless and forwards the client-provided transcript instead of deriving a shared session from common first prompts like `hi`.
+- Omit it and the proxy generates a key, echoed back as `X-Session-Id` on the response. If your client does not return that key, HoProxy matches follow-up requests by their transcript prefix and reuses the same HopGPT chat for the next user prompt or tool-result turn. Single-message first prompts still start fresh chats, so common openers like `hi` are not shared across clients.
 - Reset a conversation with `X-Conversation-Reset: true` or `metadata.{conversation_reset,reset,new_conversation}`.
 
 State expires after `CONVERSATION_TTL_MS` (6h default).

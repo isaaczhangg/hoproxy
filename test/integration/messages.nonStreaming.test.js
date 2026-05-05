@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import messagesRouter from '../../src/routes/messages.js';
+import { clearConversationStoreForTests } from '../../src/services/conversationStore.js';
 import * as hopgptClientModule from '../../src/services/hopgptClient.js';
 
 function makeSSEResponse(body) {
@@ -10,16 +11,18 @@ function makeSSEResponse(body) {
     start(controller) {
       controller.enqueue(encoder.encode(body));
       controller.close();
-    }
+    },
   });
   return {
     ok: true,
     status: 200,
     statusText: 'OK',
-    headers: { get: (k) => k.toLowerCase() === 'content-type' ? 'text/event-stream' : null },
+    headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'text/event-stream' : null) },
     body: stream,
     text: async () => body,
-    json: async () => { throw new Error('not json'); }
+    json: async () => {
+      throw new Error('not json');
+    },
   };
 }
 
@@ -33,9 +36,11 @@ function buildApp() {
 describe('POST /v1/messages non-streaming — missing final event', () => {
   let getDefaultClientSpy;
   beforeEach(() => {
+    clearConversationStoreForTests();
     getDefaultClientSpy = vi.spyOn(hopgptClientModule, 'getDefaultClient');
   });
   afterEach(() => {
+    clearConversationStoreForTests();
     vi.restoreAllMocks();
   });
 
@@ -46,13 +51,17 @@ describe('POST /v1/messages non-streaming — missing final event', () => {
 
     getDefaultClientSpy.mockReturnValue({
       validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
-      sendMessage: async () => makeSSEResponse(incompleteSSE)
+      sendMessage: async () => makeSSEResponse(incompleteSSE),
     });
 
     const app = buildApp();
     const res = await request(app)
       .post('/v1/messages')
-      .send({ model: 'claude-sonnet-4-5', max_tokens: 128, messages: [{ role: 'user', content: 'hi' }] });
+      .send({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 128,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
 
     expect(res.status).toBe(502);
     expect(res.body?.error?.message).toMatch(/Stream ended without final event/);
@@ -66,13 +75,17 @@ describe('POST /v1/messages non-streaming — missing final event', () => {
 
     getDefaultClientSpy.mockReturnValue({
       validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
-      sendMessage: async () => makeSSEResponse(completeSSE)
+      sendMessage: async () => makeSSEResponse(completeSSE),
     });
 
     const app = buildApp();
     const res = await request(app)
       .post('/v1/messages')
-      .send({ model: 'claude-sonnet-4-5', max_tokens: 128, messages: [{ role: 'user', content: 'hi' }] });
+      .send({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 128,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
 
     expect(res.status).toBe(200);
     expect(res.body?.content?.[0]?.text).toBe('hello');

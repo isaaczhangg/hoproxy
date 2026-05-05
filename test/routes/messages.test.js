@@ -3,6 +3,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudflareBlockedError, RefreshTokenExpiredError } from '../../src/errors/authErrors.js';
 import messagesRouter from '../../src/routes/messages.js';
+import { clearConversationStoreForTests } from '../../src/services/conversationStore.js';
 import { getDefaultClient, HopGPTError } from '../../src/services/hopgptClient.js';
 import { readFixture } from '../helpers/fixtures.js';
 import { createSseResponseFromEvents } from '../helpers/sse.js';
@@ -24,6 +25,7 @@ function createApp() {
 
 describe('messages routes', () => {
   beforeEach(() => {
+    clearConversationStoreForTests();
     getDefaultClient.mockReset();
   });
 
