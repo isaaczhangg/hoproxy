@@ -4,9 +4,11 @@ import { loggers } from '../utils/logger.js';
 
 const log = loggers.session;
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_TRANSCRIPT_ALIASES_PER_SESSION = 32;
 
 const sessionStore = new Map();
 const transcriptIndex = new Map();
+const transcriptAliasesBySession = new Map();
 
 function normalizeId(value) {
   if (typeof value !== 'string') {
@@ -21,6 +23,13 @@ function getTtlMs() {
   const isValidTtl = Number.isFinite(configured) && configured > 0;
 
   return isValidTtl ? configured : DEFAULT_TTL_MS;
+}
+
+function getTranscriptAliasesPerSessionLimit() {
+  const configured = Number.parseInt(process.env.TRANSCRIPT_ALIASES_PER_SESSION, 10);
+  const isValidLimit = Number.isFinite(configured) && configured > 0;
+
+  return isValidLimit ? configured : DEFAULT_TRANSCRIPT_ALIASES_PER_SESSION;
 }
 
 function cleanupExpiredSessions(now = Date.now()) {
@@ -39,10 +48,45 @@ function cleanupExpiredSessions(now = Date.now()) {
 }
 
 function removeTranscriptAliasesForSession(sessionId) {
+  const aliases = transcriptAliasesBySession.get(sessionId);
+  if (aliases) {
+    for (const key of aliases) {
+      transcriptIndex.delete(key);
+    }
+    transcriptAliasesBySession.delete(sessionId);
+    return;
+  }
+
   for (const [key, indexedSessionId] of transcriptIndex.entries()) {
     if (indexedSessionId === sessionId) {
       transcriptIndex.delete(key);
     }
+  }
+}
+
+function indexTranscriptAlias(sessionId, transcriptKey) {
+  const previousSessionId = transcriptIndex.get(transcriptKey);
+  if (previousSessionId && previousSessionId !== sessionId) {
+    transcriptAliasesBySession.get(previousSessionId)?.delete(transcriptKey);
+  }
+
+  let aliases = transcriptAliasesBySession.get(sessionId);
+  if (!aliases) {
+    aliases = new Set();
+    transcriptAliasesBySession.set(sessionId, aliases);
+  }
+
+  if (aliases.has(transcriptKey)) {
+    aliases.delete(transcriptKey);
+  }
+  aliases.add(transcriptKey);
+  transcriptIndex.set(transcriptKey, sessionId);
+
+  const maxAliases = getTranscriptAliasesPerSessionLimit();
+  while (aliases.size > maxAliases) {
+    const oldestKey = aliases.values().next().value;
+    aliases.delete(oldestKey);
+    transcriptIndex.delete(oldestKey);
   }
 }
 
@@ -173,6 +217,7 @@ function buildTranscriptKey(requestBody, messages) {
 
   const payload = stableNormalize({
     version: 1,
+    model: normalizeId(requestBody?.model),
     system: normalizeSystemPrompt(requestBody?.system),
     messages: normalizedMessages,
   });
@@ -349,7 +394,7 @@ export function rememberConversationTurn(sessionId, requestBody, assistantMessag
     return;
   }
 
-  transcriptIndex.set(transcriptKey, normalizedSessionId);
+  indexTranscriptAlias(normalizedSessionId, transcriptKey);
   log.debug('Indexed transcript for session continuity', {
     sessionId: `${normalizedSessionId.slice(0, 8)}...`,
     transcriptAliases: transcriptIndex.size,
@@ -372,4 +417,5 @@ export function resetConversationState(sessionId) {
 export function clearConversationStoreForTests() {
   sessionStore.clear();
   transcriptIndex.clear();
+  transcriptAliasesBySession.clear();
 }

@@ -401,10 +401,10 @@ function persistConversationTurn(sessionId, anthropicRequest, transformer, respo
   const nextState = transformer.getConversationState();
   if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
     updateConversationState(sessionId, nextState);
-    const assistantResponse = response || transformer.buildNonStreamingResponse();
+    const assistantContent = response?.content || transformer.getAssistantContentBlocks();
     rememberConversationTurn(sessionId, anthropicRequest, {
       role: 'assistant',
-      content: assistantResponse.content || [],
+      content: assistantContent || [],
     });
   }
 }

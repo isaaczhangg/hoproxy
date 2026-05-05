@@ -3138,10 +3138,30 @@ export class HopGPTToAnthropicTransformer {
   }
 
   buildNonStreamingResponse() {
-    let content = [];
+    const content = this.getAssistantContentBlocks();
+
+    const { stopReason, stopSequence } = this._determineStopInfo();
+
+    return {
+      id: this.messageId,
+      type: 'message',
+      role: 'assistant',
+      content,
+      model: this.model,
+      stop_reason: stopReason,
+      stop_sequence: stopSequence,
+      usage: {
+        input_tokens: this.inputTokens,
+        output_tokens: this.outputTokens,
+      },
+    };
+  }
+
+  getAssistantContentBlocks() {
+    const content = [];
 
     if (this.contentBlocks.length > 0) {
-      content = this.contentBlocks;
+      content.push(...this.contentBlocks);
     } else {
       if (this.accumulatedThinking && !this.suppressThinking) {
         const thinkingBlock = {
@@ -3195,21 +3215,7 @@ export class HopGPTToAnthropicTransformer {
       }
     }
 
-    const { stopReason, stopSequence } = this._determineStopInfo();
-
-    return {
-      id: this.messageId,
-      type: 'message',
-      role: 'assistant',
-      content,
-      model: this.model,
-      stop_reason: stopReason,
-      stop_sequence: stopSequence,
-      usage: {
-        input_tokens: this.inputTokens,
-        output_tokens: this.outputTokens,
-      },
-    };
+    return content;
   }
 
   getConversationState() {
