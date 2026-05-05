@@ -170,6 +170,58 @@ describe('HopGPTClient', () => {
       expect(refreshCall.headers.Cookie).toContain('openid_user_id=openid-id');
       expect(refreshCall.headers.Cookie).not.toContain('refreshToken=');
     });
+
+    it('prefers session cookies over a stale legacy refreshToken', async () => {
+      const refreshResponse = createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: JSON.stringify({ token: 'new-token' }),
+        headers: {},
+      });
+      tlsFetchSpy.mockResolvedValue(refreshResponse);
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        connectSid: 'session-id',
+        refreshToken: 'stale-refresh-token',
+        openidUserId: 'openid-id',
+        autoPersist: false,
+      });
+
+      const result = await client.refreshTokens();
+
+      expect(result).toBe(true);
+      expect(client.getRefreshCredentialKind()).toBe('session');
+      const [[refreshCall]] = tlsFetchSpy.mock.calls;
+      expect(refreshCall.headers.Cookie).toContain('connect.sid=session-id');
+      expect(refreshCall.headers.Cookie).toContain('openid_user_id=openid-id');
+      expect(refreshCall.headers.Cookie).not.toContain('refreshToken=stale-refresh-token');
+    });
+
+    it('uses the legacy refreshToken when session cookies are unavailable', async () => {
+      const refreshResponse = createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: JSON.stringify({ token: 'new-token' }),
+        headers: {},
+      });
+      tlsFetchSpy.mockResolvedValue(refreshResponse);
+
+      const client = new HopGPTClient({
+        baseURL: 'https://example.com',
+        connectSid: null,
+        refreshToken: 'legacy-refresh-token',
+        openidUserId: null,
+        autoPersist: false,
+      });
+
+      const result = await client.refreshTokens();
+
+      expect(result).toBe(true);
+      expect(client.getRefreshCredentialKind()).toBe('refreshToken');
+      const [[refreshCall]] = tlsFetchSpy.mock.calls;
+      expect(refreshCall.headers.Cookie).toContain('refreshToken=legacy-refresh-token');
+    });
   });
 
   describe('validateAuth()', () => {

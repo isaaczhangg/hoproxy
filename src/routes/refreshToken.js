@@ -33,11 +33,11 @@ function refreshCredentialKind(client) {
   if (typeof client.getRefreshCredentialKind === 'function') {
     return client.getRefreshCredentialKind();
   }
-  if (client.cookies?.refreshToken) {
-    return 'refreshToken';
-  }
   if (client.cookies?.connect_sid && client.cookies?.openid_user_id) {
     return 'session';
+  }
+  if (client.cookies?.refreshToken) {
+    return 'refreshToken';
   }
   return 'none';
 }
@@ -236,7 +236,7 @@ router.get('/token-debug', (_req, res) => {
       },
       refreshCredential: {
         present: !!envRefreshToken || !!(envSid && envOpenidId),
-        kind: envRefreshToken ? 'refreshToken' : envSid && envOpenidId ? 'session' : 'none',
+        kind: envSid && envOpenidId ? 'session' : envRefreshToken ? 'refreshToken' : 'none',
         masked: maskToken(envRefreshToken),
         length: envRefreshToken?.length || 0,
         matchesMemory: envRefreshToken === memoryRefreshToken,

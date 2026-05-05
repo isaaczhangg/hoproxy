@@ -148,7 +148,7 @@ HoProxy handles two refresh scopes:
 
 - **Bearer token** (~75 min lifespan). Auto-refreshed before expiry by calling HopGPT's `/api/auth/refresh` with the same empty-body request shape the browser uses; if HopGPT still returns 401/403, HoProxy refreshes once and retries the failed request phase.
 - **Browser session cookies** (`connect.sid` plus `openid_user_id`). Current HopGPT sessions use this browser cookie context to mint bearer tokens. When either cookie expires or is rejected, run `npm run extract` to re-authenticate.
-- **Legacy `refreshToken`**. Older HopGPT deployments may still set this cookie; HoProxy will send and persist it when present, but it is no longer required.
+- **Legacy `refreshToken`**. Older HopGPT deployments may still set this cookie; HoProxy only uses it when session cookies are unavailable, so stale legacy tokens do not override the current `connect.sid` refresh path.
 
 During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `connect.sid`, `openid_user_id`, optional legacy `refreshToken`, and `token_provider` cookies can rotate server-side on refresh and are tracked together; Cloudflare cookies are best-effort and may need re-extraction on blocks.
 
