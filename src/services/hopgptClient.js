@@ -199,8 +199,7 @@ export class HopGPTClient {
     return 'none';
   }
 
-  buildCookieHeader(options = {}) {
-    const { includeRefreshToken = true } = options;
+  buildCookieHeader() {
     const cookies = [];
 
     if (this.cookies.cf_clearance) {
@@ -215,7 +214,7 @@ export class HopGPTClient {
     if (this.cookies.token_provider) {
       cookies.push(`token_provider=${this.cookies.token_provider}`);
     }
-    if (includeRefreshToken && this.cookies.refreshToken) {
+    if (this.cookies.refreshToken) {
       cookies.push(`refreshToken=${this.cookies.refreshToken}`);
     }
     if (this.cookies.openid_user_id) {

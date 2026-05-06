@@ -198,7 +198,7 @@ describe('HopGPTClient', () => {
       expect(refreshCall.headers.Cookie).toContain('refreshToken=refresh-token');
     });
 
-    it('uses the legacy refreshToken when session cookies are unavailable', async () => {
+    it('uses the refreshToken cookie when session cookies are unavailable', async () => {
       const refreshResponse = createMockTLSResponse({
         ok: true,
         status: 200,
