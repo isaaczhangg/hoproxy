@@ -1144,6 +1144,56 @@ describe('hopGPTToAnthropic transformer', () => {
     expect(response.stop_reason).toBe('tool_use');
   });
 
+  it('uses tool input_schema before parsing JSON-looking invoke parameters', () => {
+    const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
+      thinkingEnabled: false,
+      tools: [
+        {
+          name: 'Configure',
+          input_schema: {
+            type: 'object',
+            properties: {
+              literal: { type: 'string' },
+              options: { type: 'object' },
+            },
+          },
+        },
+      ],
+      toolNames: ['Configure'],
+    });
+
+    const functionCalls = `<function_calls>
+<invoke name="Configure">
+<parameter name="literal">{"key":"val"}</parameter>
+<parameter name="options">{"enabled":true}</parameter>
+</invoke>
+</function_calls>`;
+
+    transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({ created: true, message: { id: 'msg-create' } }),
+    });
+    transformer.transformEvent({
+      event: 'message',
+      data: JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: functionCalls }],
+          },
+        },
+      }),
+    });
+
+    const response = transformer.buildNonStreamingResponse();
+    const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
+    expect(toolUseBlocks).toHaveLength(1);
+    expect(toolUseBlocks[0].input).toEqual({
+      literal: '{"key":"val"}',
+      options: { enabled: true },
+    });
+  });
+
   it('emits every tool call in one parsed batch before stopping on tool use', () => {
     const transformer = new HopGPTToAnthropicTransformer('claude-sonnet-4-5-thinking', {
       thinkingEnabled: false,

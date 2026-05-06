@@ -156,6 +156,7 @@ router.post('/messages', async (req, res) => {
       mcpPassthrough,
       stopOnToolUse,
       toolNames,
+      tools: anthropicRequest.tools,
     };
 
     // Echo the requested model in responses to avoid client-side model validation errors.

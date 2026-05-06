@@ -867,6 +867,62 @@ function normalizeToolInput(input) {
   return normalizeQuestionsInput(input);
 }
 
+function normalizeJsonSchemaTypes(type) {
+  if (Array.isArray(type)) {
+    return type.filter((entry) => typeof entry === 'string');
+  }
+  return typeof type === 'string' ? [type] : [];
+}
+
+function isStringSchema(schema) {
+  return normalizeJsonSchemaTypes(schema?.type).includes('string');
+}
+
+function shouldParseJsonForSchema(schema) {
+  if (!schema || typeof schema !== 'object') {
+    return true;
+  }
+  const types = normalizeJsonSchemaTypes(schema.type);
+  if (types.includes('string')) {
+    return false;
+  }
+  if (types.length === 0) {
+    return Boolean(schema.properties || schema.items || schema.anyOf || schema.oneOf);
+  }
+  return types.some((type) => ['array', 'object', 'boolean', 'integer', 'number'].includes(type));
+}
+
+function coerceValueForSchema(value, schema) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  if (isStringSchema(schema)) {
+    return value;
+  }
+  if (!shouldParseJsonForSchema(schema)) {
+    return value;
+  }
+  return parseEmbeddedJson(value);
+}
+
+function coerceToolArgumentsForSchema(input, schema) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return input;
+  }
+  const properties =
+    schema?.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  let changed = false;
+  const coerced = {};
+  for (const [key, value] of Object.entries(input)) {
+    const nextValue = coerceValueForSchema(value, properties[key]);
+    coerced[key] = nextValue;
+    if (nextValue !== value) {
+      changed = true;
+    }
+  }
+  return changed ? coerced : input;
+}
+
 function getLeadingTagName(block) {
   if (!block) {
     return null;
@@ -1193,7 +1249,7 @@ function parseInvokeBlock(invokeBlock) {
 
     if (closingMatch) {
       const paramValue = invokeBlock.slice(valueStartPos, closingMatch.startIndex).trim();
-      args[paramName] = parseEmbeddedJson(paramValue);
+      args[paramName] = paramValue;
       // Move the regex past this parameter to continue searching
       paramTagRe.lastIndex = closingMatch.endIndex;
     }
@@ -1610,10 +1666,12 @@ function hasOpenFunctionCallsWrapper(text) {
     return false;
   }
   const startIndex = Math.min(...startIndexes);
-  return (
-    !lower.includes('</function_calls>', startIndex) &&
-    !lower.includes('</antml:function_calls>', startIndex)
+  const closingTags = new Set(
+    [...FUNCTION_CALL_TAG_NAMES].flatMap(
+      (tagName) => TOOL_TAG_CLOSINGS[tagName] || [`</${tagName}>`],
+    ),
   );
+  return ![...closingTags].some((tag) => lower.includes(tag, startIndex));
 }
 
 function hasClosedStandaloneJsonToolTag(text) {
@@ -1885,6 +1943,7 @@ export class HopGPTToAnthropicTransformer {
     this.availableToolNameSet = new Set(this.availableToolNames);
     this.availableToolNameLowerMap = new Map();
     this.availableToolNamesNormalized = [];
+    this.availableToolSchemaMap = new Map();
     for (const name of this.availableToolNames) {
       const lower = name.toLowerCase();
       if (!this.availableToolNameLowerMap.has(lower)) {
@@ -1894,6 +1953,17 @@ export class HopGPTToAnthropicTransformer {
         name,
         normalized: normalizeToolNameToken(name),
       });
+    }
+    if (Array.isArray(options.tools)) {
+      for (const tool of options.tools) {
+        if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string') {
+          continue;
+        }
+        const schema = tool.input_schema || tool.parameters;
+        if (schema && typeof schema === 'object') {
+          this.availableToolSchemaMap.set(tool.name, schema);
+        }
+      }
     }
     this.genericMcpToolName = this._detectGenericMcpToolName();
 
@@ -3238,11 +3308,13 @@ export class HopGPTToAnthropicTransformer {
     if (!resolved?.name) {
       return null;
     }
+    const schema = this.availableToolSchemaMap.get(resolved.name);
+    const input = coerceToolArgumentsForSchema(resolved.input, schema);
     return {
       type: 'tool_use',
       id: resolved.toolUseId || generateToolUseId(),
       name: resolved.name,
-      input: normalizeToolInput(resolved.input),
+      input: normalizeToolInput(input),
     };
   }
 
