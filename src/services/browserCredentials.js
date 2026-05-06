@@ -191,7 +191,7 @@ export async function extractCredentials(options = {}) {
     console.log('\nExtracted:');
     console.log(
       `  refresh credential: ${
-        credentials.cookies.refreshToken ? 'legacy refreshToken' : 'connect.sid session'
+        credentials.cookies.refreshToken ? 'refreshToken cookie' : 'connect.sid session'
       }`,
     );
     console.log(`  refreshToken:   ${credentials.cookies.refreshToken ? 'yes' : 'no'}`);
