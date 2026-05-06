@@ -333,6 +333,7 @@ export function getConversationState(sessionId) {
     conversationId: entry.conversationId || null,
     lastAssistantMessageId: entry.lastAssistantMessageId || null,
     systemPrompt: entry.systemPrompt || null,
+    toolPromptHash: entry.toolPromptHash || null,
   };
 }
 
@@ -350,6 +351,7 @@ export function updateConversationState(sessionId, state) {
   const conversationId = normalizeId(state.conversationId);
   const lastAssistantMessageId = normalizeId(state.lastAssistantMessageId);
   const systemPrompt = normalizeId(state.systemPrompt);
+  const toolPromptHash = normalizeId(state.toolPromptHash);
 
   if (conversationId) {
     entry.conversationId = conversationId;
@@ -359,6 +361,9 @@ export function updateConversationState(sessionId, state) {
   }
   if (systemPrompt) {
     entry.systemPrompt = systemPrompt;
+  }
+  if (toolPromptHash) {
+    entry.toolPromptHash = toolPromptHash;
   }
 
   entry.lastTouchedAt = now;

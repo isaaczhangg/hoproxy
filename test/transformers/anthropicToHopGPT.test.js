@@ -48,6 +48,95 @@ describe('anthropicToHopGPT transformers', () => {
     });
   });
 
+  it('prompts tools with Claude function-call XML', () => {
+    const request = {
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'Read the README' }],
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          input_schema: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string', description: 'Path to read' },
+            },
+            required: ['file_path'],
+          },
+        },
+      ],
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.text).toContain('<function_calls>');
+    expect(result.text).toContain('<invoke name="tool_name">');
+    expect(result.text).toContain('### Read');
+    expect(result.text).not.toContain('<tool_call>');
+  });
+
+  it('uses compact tool reminders when definitions are unchanged in a threaded conversation', () => {
+    const request = {
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'Read the README' }],
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read a file',
+          input_schema: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string' },
+            },
+            required: ['file_path'],
+          },
+        },
+      ],
+    };
+    const first = transformAnthropicToHopGPT(request);
+    const second = transformAnthropicToHopGPT(
+      { ...request, messages: [{ role: 'user', content: 'Read package.json' }] },
+      {
+        conversationId: 'conv-1',
+        lastAssistantMessageId: 'msg-1',
+        toolPromptHash: first.__hoproxyToolPromptHash,
+      },
+    );
+
+    expect(first.__hoproxyToolPromptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(second.text).toContain('# Tool Use Reminder');
+    expect(second.text).toContain('Available tools: Read');
+    expect(second.text).not.toContain('## Tool Definitions');
+  });
+
+  it('moves unsupported schema constraints into descriptions', () => {
+    const transformed = transformTools([
+      {
+        name: 'Search',
+        input_schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            query: {
+              type: 'string',
+              minLength: 2,
+              maxLength: 80,
+              pattern: '^[a-z]+$',
+            },
+          },
+          required: ['query'],
+        },
+      },
+    ]);
+
+    const schema = transformed[0].input_schema;
+    expect(schema.additionalProperties).toBeUndefined();
+    expect(schema.description).toContain('No extra properties allowed');
+    expect(schema.properties.query.description).toContain('minLength: 2');
+    expect(schema.properties.query.description).toContain('maxLength: 80');
+    expect(schema.properties.query.description).toContain('pattern: ^[a-z]+$');
+  });
+
   it('handles multi-turn conversation text and image content', async () => {
     const request = await readFixture('anthropic-request-basic.json');
     const result = transformAnthropicToHopGPT(request);

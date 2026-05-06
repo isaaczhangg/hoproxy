@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { loggers } from '../utils/logger.js';
 import { isThinkingModel } from './hopGPTToAnthropic.js';
@@ -70,22 +71,30 @@ export function getToolChoiceConfig(toolChoice) {
   return config;
 }
 
-function buildToolInjectionPrompt(tools, toolChoice) {
+function buildToolInjectionPrompt(tools, toolChoice, options = {}) {
   if (!tools || !Array.isArray(tools) || tools.length === 0) {
     return '';
   }
 
   const toolChoiceConfig = getToolChoiceConfig(toolChoice);
+  const toolNames = tools.map((tool) => tool.name).filter(Boolean);
 
-  let prompt = `\n\n# Available Tools\n\nYou have access to the following tools. To use a tool, output a tool call in the following XML format:\n\n<tool_call>\n{"name": "tool_name", "parameters": {"param1": "value1", "param2": "value2"}}\n</tool_call>\n\nIMPORTANT: You MUST use this exact XML format to call tools.\n`;
+  let prompt = options.compact
+    ? `\n\n# Tool Use Reminder\n\nThe available tool definitions are unchanged from earlier in this conversation. Available tools: ${toolNames.join(', ')}.\n`
+    : `\n\n# Available Tools\n\nYou have access to the following tools. To use tools, output Anthropic-style XML in this exact shape:\n\n<function_calls>\n<invoke name="tool_name">\n<parameter name="param1">value1</parameter>\n<parameter name="param2">value2</parameter>\n</invoke>\n</function_calls>\n\nUse one <invoke> per tool call. For object or array parameters, put compact JSON inside the matching <parameter> tag. If a tool has no parameters, omit parameter tags. Do not use Markdown fences around tool calls.\n`;
 
   if (toolChoiceConfig.allowTools === false) {
     prompt += `Tool use is disabled for this response. Do not call any tools.\n`;
   } else {
-    prompt += `If you call tools, respond with ONLY the <tool_call> block(s) and no extra text. Do not narrate before, between, or after tool calls. If you are not calling a tool, respond normally without any <tool_call> blocks.\n`;
+    prompt += `If you call tools, respond with ONLY the <function_calls> block and no extra text. Do not narrate before, between, or after tool calls. If you are not calling a tool, respond normally without any <function_calls> block.\n`;
     if (toolChoiceConfig.disableParallelToolUse) {
       prompt += `Call at most one tool per response, then wait for tool results before calling another tool.\n`;
     }
+  }
+
+  if (options.compact) {
+    prompt += buildToolChoiceInstruction(toolChoiceConfig);
+    return prompt;
   }
 
   prompt += `\n## Tool Definitions\n\n`;
@@ -119,6 +128,13 @@ function buildToolInjectionPrompt(tools, toolChoice) {
     }
   }
 
+  prompt += buildToolChoiceInstruction(toolChoiceConfig);
+
+  return prompt;
+}
+
+function buildToolChoiceInstruction(toolChoiceConfig) {
+  let prompt = '';
   if (toolChoiceConfig.forcedToolName) {
     prompt += `\nYou MUST use the "${toolChoiceConfig.forcedToolName}" tool in your response.\n`;
   } else if (toolChoiceConfig.mustUseTool) {
@@ -130,10 +146,9 @@ function buildToolInjectionPrompt(tools, toolChoice) {
     if (toolChoiceConfig.disableParallelToolUse) {
       prompt += `Call at most one tool per response. After calling a tool, wait for the result before proceeding.\n`;
     } else {
-      prompt += `Prefer one contiguous batch containing every independent tool call you can determine now. Output multiple <tool_call> blocks back-to-back with no prose or pauses between them. After calling tool(s), wait for the result(s) before proceeding.\n`;
+      prompt += `Prefer one contiguous <function_calls> batch containing every independent tool call you can determine now. After calling tool(s), wait for the result(s) before proceeding.\n`;
     }
   }
-
   return prompt;
 }
 
@@ -305,12 +320,30 @@ function sanitizeSchemaNode(schema, depth = 0) {
     node.type = type;
   }
 
-  if (typeof resolved.description === 'string') {
-    node.description = resolved.description;
+  const descriptionHints = [];
+  if (typeof resolved.description === 'string' && resolved.description.trim().length > 0) {
+    descriptionHints.push(resolved.description.trim());
+  }
+
+  if (resolved.const !== undefined && !Array.isArray(resolved.enum)) {
+    node.enum = [resolved.const];
   }
 
   if (Array.isArray(resolved.enum)) {
     node.enum = resolved.enum;
+  }
+
+  const constraintHint = formatConstraintHint(resolved);
+  if (constraintHint) {
+    descriptionHints.push(constraintHint);
+  }
+
+  if (resolved.additionalProperties === false) {
+    descriptionHints.push('No extra properties allowed');
+  }
+
+  if (descriptionHints.length > 0) {
+    node.description = descriptionHints.join(' ');
   }
 
   if (resolved.items) {
@@ -329,14 +362,53 @@ function sanitizeSchemaNode(schema, depth = 0) {
     }
   }
 
-  if (resolved.additionalProperties !== undefined) {
-    node.additionalProperties =
-      typeof resolved.additionalProperties === 'boolean'
-        ? resolved.additionalProperties
-        : sanitizeSchemaNode(resolved.additionalProperties, depth + 1);
-  }
-
   return node;
+}
+
+function formatConstraintHint(schema) {
+  if (!schema || typeof schema !== 'object') {
+    return '';
+  }
+  const hints = [];
+  const constraints = [
+    ['minLength', 'minLength'],
+    ['maxLength', 'maxLength'],
+    ['pattern', 'pattern'],
+    ['minimum', 'minimum'],
+    ['maximum', 'maximum'],
+    ['exclusiveMinimum', 'exclusiveMinimum'],
+    ['exclusiveMaximum', 'exclusiveMaximum'],
+    ['minItems', 'minItems'],
+    ['maxItems', 'maxItems'],
+    ['format', 'format'],
+  ];
+  for (const [key, label] of constraints) {
+    const value = schema[key];
+    if (value !== undefined && value !== null && typeof value !== 'object') {
+      hints.push(`${label}: ${value}`);
+    }
+  }
+  return hints.length > 0 ? `Constraints: ${hints.join(', ')}` : '';
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  const entries = Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+  return `{${entries.join(',')}}`;
+}
+
+function hashToolDefinitions(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return null;
+  }
+  return crypto.createHash('sha256').update(stableStringify(tools)).digest('hex');
 }
 
 function sanitizeToolSchema(schema) {
@@ -845,6 +917,7 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
   // break parsing. Use a sentinel that is unlikely to appear in model output.
   const toolCallStopSequence = '<|hopgpt_tool_stop|>';
   const normalizedTools = normalizeToolDefinitions(tools);
+  const toolPromptHash = hashToolDefinitions(normalizedTools);
 
   const thinkingConfig = extractThinkingConfig(anthropicRequest);
   const processedMessages = prepareMessagesForThinking(messages, {
@@ -911,8 +984,17 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
     }
   }
 
-  // This is necessary because HopGPT doesn't pass tools to the model natively
-  const toolInjection = buildToolInjectionPrompt(normalizedTools, tool_choice);
+  const canReuseToolDefinitions =
+    toolPromptHash &&
+    conversationState?.toolPromptHash === toolPromptHash &&
+    !isNewConversation &&
+    !systemChanged;
+  // This is necessary because HopGPT doesn't pass tools to the model natively.
+  // When a threaded conversation has already seen the same definitions, keep
+  // follow-up turns compact and only remind the model of the XML grammar.
+  const toolInjection = buildToolInjectionPrompt(normalizedTools, tool_choice, {
+    compact: canReuseToolDefinitions,
+  });
   if (toolInjection) {
     text = text + toolInjection;
   }
@@ -1009,8 +1091,16 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
     textLength: text.length,
     hasImages: images.length > 0,
     toolsInjected: !!toolInjection,
+    compactToolPrompt: canReuseToolDefinitions,
     isNewConversation,
   });
+
+  if (toolPromptHash) {
+    Object.defineProperty(hopGPTRequest, '__hoproxyToolPromptHash', {
+      value: toolPromptHash,
+      enumerable: false,
+    });
+  }
 
   return hopGPTRequest;
 }

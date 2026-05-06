@@ -127,7 +127,7 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | `HOPGPT_USER_AGENT`                         | —           | Browser `User-Agent`. Helps satisfy Cloudflare.                                                                      |
 | `HOPGPT_STREAMING_TRANSPORT`                | `fetch`     | `fetch` or `tls`. Switch to `tls` if Cloudflare blocks streaming on native fetch.                                    |
 | `HOPGPT_STREAM_IDLE_PING_DELAY_MS`          | `250`       | Delay before sending an early Anthropic `message_start` while HopGPT is still opening the upstream stream. Use `0` for immediate liveness. |
-| `HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS`           | `750`       | Idle window after a streamed `tool_use` before HoProxy force-closes the Anthropic tool turn. Use `0` to close immediately. |
+| `HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS`           | `100`       | Idle fallback after a streamed `tool_use` before HoProxy force-closes the Anthropic tool turn. Parsed XML tool batches are closed immediately; use `0` to close any idle fallback immediately. |
 | `CONVERSATION_TTL_MS`                       | `21600000`  | In-memory conversation TTL (ms); default 6h.                                                                         |
 | `SIGNATURE_CACHE_TTL_MS`                    | `3600000`   | Tool-signature cache TTL (ms); default 1h.                                                                           |
 | `HOPGPT_TOOL_CALL_BUFFER_SIZE`              | `1000000`   | Max buffer for streaming tool-call detection (bytes).                                                                |
