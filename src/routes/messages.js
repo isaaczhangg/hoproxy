@@ -30,7 +30,7 @@ import { parseSSEStream, pipeSSEStream } from '../utils/sseParser.js';
 const log = loggers.messages;
 const router = Router();
 const DEFAULT_STREAM_IDLE_PING_DELAY_MS = 250;
-const DEFAULT_TOOL_BATCH_IDLE_CLOSE_MS = 750;
+const DEFAULT_TOOL_BATCH_IDLE_CLOSE_MS = 100;
 
 router.post('/messages/count_tokens', (_req, res) => {
   res.status(501).json({
@@ -156,6 +156,7 @@ router.post('/messages', async (req, res) => {
       mcpPassthrough,
       stopOnToolUse,
       toolNames,
+      tools: anthropicRequest.tools,
     };
 
     // Echo the requested model in responses to avoid client-side model validation errors.
@@ -314,7 +315,7 @@ async function handleStreamingRequest(
     }
 
     // Update state before ending the response so fast follow-up requests see it.
-    persistConversationTurn(sessionId, anthropicRequest, transformer);
+    persistConversationTurn(sessionId, anthropicRequest, transformer, null, hopGPTRequest);
 
     if (!clientDisconnected && !res.writableEnded) {
       res.end();
@@ -393,13 +394,27 @@ async function handleNonStreamingRequest(
 
   const response = transformer.buildNonStreamingResponse();
   // Update state before sending the response so fast follow-up requests see it.
-  persistConversationTurn(sessionId, anthropicRequest, transformer, response);
+  persistConversationTurn(sessionId, anthropicRequest, transformer, response, hopGPTRequest);
   res.json(response);
 }
 
-function persistConversationTurn(sessionId, anthropicRequest, transformer, response = null) {
-  const nextState = transformer.getConversationState();
-  if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
+function persistConversationTurn(
+  sessionId,
+  anthropicRequest,
+  transformer,
+  response = null,
+  hopGPTRequest = null,
+) {
+  const nextState = {
+    ...transformer.getConversationState(),
+    toolPromptHash: hopGPTRequest?.__hoproxyToolPromptHash || null,
+  };
+  if (
+    nextState?.lastAssistantMessageId ||
+    nextState?.conversationId ||
+    nextState?.systemPrompt ||
+    nextState?.toolPromptHash
+  ) {
     updateConversationState(sessionId, nextState);
     const assistantContent = response?.content || transformer.getAssistantContentBlocks();
     rememberConversationTurn(sessionId, anthropicRequest, {
@@ -450,6 +465,7 @@ function normalizeConversationState(state) {
     conversationId: state.conversationId || state.conversation_id || null,
     lastAssistantMessageId: state.lastAssistantMessageId || state.last_assistant_message_id || null,
     systemPrompt: state.systemPrompt || state.system_prompt || state.system || null,
+    toolPromptHash: state.toolPromptHash || state.tool_prompt_hash || null,
   };
 }
 
@@ -471,6 +487,7 @@ function mergeConversationStates(storedState, requestState) {
     lastAssistantMessageId:
       requestState.lastAssistantMessageId ?? storedState.lastAssistantMessageId,
     systemPrompt: requestState.systemPrompt ?? storedState.systemPrompt,
+    toolPromptHash: requestState.toolPromptHash ?? storedState.toolPromptHash,
   };
 }
 

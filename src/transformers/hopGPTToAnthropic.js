@@ -867,6 +867,62 @@ function normalizeToolInput(input) {
   return normalizeQuestionsInput(input);
 }
 
+function normalizeJsonSchemaTypes(type) {
+  if (Array.isArray(type)) {
+    return type.filter((entry) => typeof entry === 'string');
+  }
+  return typeof type === 'string' ? [type] : [];
+}
+
+function isStringSchema(schema) {
+  return normalizeJsonSchemaTypes(schema?.type).includes('string');
+}
+
+function shouldParseJsonForSchema(schema) {
+  if (!schema || typeof schema !== 'object') {
+    return true;
+  }
+  const types = normalizeJsonSchemaTypes(schema.type);
+  if (types.includes('string')) {
+    return false;
+  }
+  if (types.length === 0) {
+    return Boolean(schema.properties || schema.items || schema.anyOf || schema.oneOf);
+  }
+  return types.some((type) => ['array', 'object', 'boolean', 'integer', 'number'].includes(type));
+}
+
+function coerceValueForSchema(value, schema) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  if (isStringSchema(schema)) {
+    return value;
+  }
+  if (!shouldParseJsonForSchema(schema)) {
+    return value;
+  }
+  return parseEmbeddedJson(value);
+}
+
+function coerceToolArgumentsForSchema(input, schema) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return input;
+  }
+  const properties =
+    schema?.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  let changed = false;
+  const coerced = {};
+  for (const [key, value] of Object.entries(input)) {
+    const nextValue = coerceValueForSchema(value, properties[key]);
+    coerced[key] = nextValue;
+    if (nextValue !== value) {
+      changed = true;
+    }
+  }
+  return changed ? coerced : input;
+}
+
 function getLeadingTagName(block) {
   if (!block) {
     return null;
@@ -1129,7 +1185,7 @@ function parseInvokeBlock(invokeBlock) {
   let paramTagMatch;
 
   // Determine boundary tags based on the invoke block type
-  const boundaryTags = ['</invoke>', '</invoke>'];
+  const boundaryTags = ['</invoke>', '</antml:invoke>'];
 
   while ((paramTagMatch = paramTagRe.exec(invokeBlock)) !== null) {
     const paramStart = paramTagMatch.index;
@@ -1598,6 +1654,95 @@ function splitOpenFunctionCallsRemainder(text) {
   };
 }
 
+function hasOpenFunctionCallsWrapper(text) {
+  if (!text) {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  const startIndexes = FUNCTION_CALLS_TAGS.map((tag) => lower.indexOf(tag)).filter(
+    (index) => index !== -1,
+  );
+  if (startIndexes.length === 0) {
+    return false;
+  }
+  const startIndex = Math.min(...startIndexes);
+  const closingTags = new Set(
+    [...FUNCTION_CALL_TAG_NAMES].flatMap(
+      (tagName) => TOOL_TAG_CLOSINGS[tagName] || [`</${tagName}>`],
+    ),
+  );
+  return ![...closingTags].some((tag) => lower.includes(tag, startIndex));
+}
+
+function hasClosedStandaloneJsonToolTag(text) {
+  if (!text) {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  return (
+    (lower.includes('<tool_call') && lower.includes('</tool_call>')) ||
+    (lower.includes('<tool_use') && lower.includes('</tool_use>'))
+  );
+}
+
+function consumeToolClosingPrefix(text, tagName) {
+  if (!text) {
+    return '';
+  }
+  const closingTags = TOOL_TAG_CLOSINGS[tagName] || [`</${tagName}>`];
+  const leadingWhitespace = text.match(/^\s*/)?.[0] || '';
+  const afterWhitespace = text.slice(leadingWhitespace.length);
+  const lower = afterWhitespace.toLowerCase();
+  for (const closingTag of closingTags) {
+    if (lower.startsWith(closingTag)) {
+      return afterWhitespace.slice(closingTag.length);
+    }
+  }
+  return text;
+}
+
+function splitOpenJsonToolCallRemainder(text) {
+  const openingTag = findNextToolTag(text, 0);
+  if (
+    !openingTag ||
+    openingTag.index !== 0 ||
+    openingTag.startTagEnd === -1 ||
+    (openingTag.tagName !== 'tool_call' && openingTag.tagName !== 'tool_use')
+  ) {
+    return null;
+  }
+
+  const contentStart = openingTag.startTagEnd + 1;
+  const firstBraceOffset = text.slice(contentStart).indexOf('{');
+  if (firstBraceOffset === -1) {
+    return null;
+  }
+
+  const objectStart = contentStart + firstBraceOffset;
+  const objectEnd = findMatchingBrace(text, objectStart);
+  if (objectEnd === -1) {
+    return null;
+  }
+
+  const candidateBlock = text.slice(0, objectEnd + 1);
+  const toolCalls = parseIncompleteToolCallBlocks(candidateBlock, {
+    allowFunctionCalls: false,
+  });
+  if (toolCalls.length === 0) {
+    return null;
+  }
+
+  const trailing = consumeToolClosingPrefix(text.slice(objectEnd + 1), openingTag.tagName);
+  const trailingSplit = splitTrailingAfterIncrementalToolCalls(trailing);
+  return {
+    segments: [
+      ...toolCalls.map((toolCall) => ({ type: 'tool_call', toolCall })),
+      ...trailingSplit.segments,
+    ],
+    remainder: trailingSplit.remainder,
+  };
+}
+
 function splitMcpToolCalls(text, allowIncomplete = false) {
   if (!text) {
     return [];
@@ -1646,6 +1791,14 @@ function splitStreamTextForMcpToolCalls(text) {
       }
       segments.push(...openFunctionCalls.segments);
       return { segments, remainder: openFunctionCalls.remainder };
+    }
+    const openJsonToolCall = splitOpenJsonToolCallRemainder(potentialRemainder);
+    if (openJsonToolCall) {
+      if (startIndex > 0) {
+        segments.push({ type: 'text', text: trailing.slice(0, startIndex) });
+      }
+      segments.push(...openJsonToolCall.segments);
+      return { segments, remainder: openJsonToolCall.remainder };
     }
     if (potentialRemainder.length > MAX_BUFFER_SIZE) {
       const incompleteBlocks = parseIncompleteToolCallBlocks(potentialRemainder, {
@@ -1790,6 +1943,7 @@ export class HopGPTToAnthropicTransformer {
     this.availableToolNameSet = new Set(this.availableToolNames);
     this.availableToolNameLowerMap = new Map();
     this.availableToolNamesNormalized = [];
+    this.availableToolSchemaMap = new Map();
     for (const name of this.availableToolNames) {
       const lower = name.toLowerCase();
       if (!this.availableToolNameLowerMap.has(lower)) {
@@ -1799,6 +1953,17 @@ export class HopGPTToAnthropicTransformer {
         name,
         normalized: normalizeToolNameToken(name),
       });
+    }
+    if (Array.isArray(options.tools)) {
+      for (const tool of options.tools) {
+        if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string') {
+          continue;
+        }
+        const schema = tool.input_schema || tool.parameters;
+        if (schema && typeof schema === 'object') {
+          this.availableToolSchemaMap.set(tool.name, schema);
+        }
+      }
     }
     this.genericMcpToolName = this._detectGenericMcpToolName();
 
@@ -2419,6 +2584,8 @@ export class HopGPTToAnthropicTransformer {
     }
 
     const combined = `${this.mcpToolCallBuffer}${sanitizedText}`;
+    const shouldWaitForMoreToolCalls =
+      hasOpenFunctionCallsWrapper(combined) || hasClosedStandaloneJsonToolTag(combined);
     const { segments, remainder } = splitStreamTextForMcpToolCalls(combined);
     this.mcpToolCallBuffer = remainder;
     const hasParsedToolCall = segments.some((segment) => segment.type === 'tool_call');
@@ -2487,6 +2654,18 @@ export class HopGPTToAnthropicTransformer {
           sawToolCall = true;
         }
       }
+    }
+
+    if (
+      this.stopOnToolUse &&
+      sawToolCall &&
+      !shouldWaitForMoreToolCalls &&
+      !this._hasEmittedMessageStop
+    ) {
+      this.mcpToolCallBuffer = '';
+      this._toolBufferWarningEmitted = false;
+      this._nextToolBufferWarningAt = TOOL_CALL_BUFFER_WARN_THRESHOLD;
+      events.push(...this._createMessageStop());
     }
 
     return events;
@@ -3129,11 +3308,13 @@ export class HopGPTToAnthropicTransformer {
     if (!resolved?.name) {
       return null;
     }
+    const schema = this.availableToolSchemaMap.get(resolved.name);
+    const input = coerceToolArgumentsForSchema(resolved.input, schema);
     return {
       type: 'tool_use',
       id: resolved.toolUseId || generateToolUseId(),
       name: resolved.name,
-      input: normalizeToolInput(resolved.input),
+      input: normalizeToolInput(input),
     };
   }
 
