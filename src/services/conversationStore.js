@@ -1,10 +1,14 @@
+import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { loggers } from '../utils/logger.js';
 
 const log = loggers.session;
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_TRANSCRIPT_ALIASES_PER_SESSION = 32;
 
 const sessionStore = new Map();
+const transcriptIndex = new Map();
+const transcriptAliasesBySession = new Map();
 
 function normalizeId(value) {
   if (typeof value !== 'string') {
@@ -21,17 +25,68 @@ function getTtlMs() {
   return isValidTtl ? configured : DEFAULT_TTL_MS;
 }
 
+function getTranscriptAliasesPerSessionLimit() {
+  const configured = Number.parseInt(process.env.TRANSCRIPT_ALIASES_PER_SESSION, 10);
+  const isValidLimit = Number.isFinite(configured) && configured > 0;
+
+  return isValidLimit ? configured : DEFAULT_TRANSCRIPT_ALIASES_PER_SESSION;
+}
+
 function cleanupExpiredSessions(now = Date.now()) {
   const ttlMs = getTtlMs();
   let expiredCount = 0;
   for (const [sessionId, entry] of sessionStore.entries()) {
     if (now - entry.lastTouchedAt > ttlMs) {
       sessionStore.delete(sessionId);
+      removeTranscriptAliasesForSession(sessionId);
       expiredCount++;
     }
   }
   if (expiredCount > 0) {
     log.debug(`Cleaned up ${expiredCount} expired sessions`, { remaining: sessionStore.size });
+  }
+}
+
+function removeTranscriptAliasesForSession(sessionId) {
+  const aliases = transcriptAliasesBySession.get(sessionId);
+  if (aliases) {
+    for (const key of aliases) {
+      transcriptIndex.delete(key);
+    }
+    transcriptAliasesBySession.delete(sessionId);
+    return;
+  }
+
+  for (const [key, indexedSessionId] of transcriptIndex.entries()) {
+    if (indexedSessionId === sessionId) {
+      transcriptIndex.delete(key);
+    }
+  }
+}
+
+function indexTranscriptAlias(sessionId, transcriptKey) {
+  const previousSessionId = transcriptIndex.get(transcriptKey);
+  if (previousSessionId && previousSessionId !== sessionId) {
+    transcriptAliasesBySession.get(previousSessionId)?.delete(transcriptKey);
+  }
+
+  let aliases = transcriptAliasesBySession.get(sessionId);
+  if (!aliases) {
+    aliases = new Set();
+    transcriptAliasesBySession.set(sessionId, aliases);
+  }
+
+  if (aliases.has(transcriptKey)) {
+    aliases.delete(transcriptKey);
+  }
+  aliases.add(transcriptKey);
+  transcriptIndex.set(transcriptKey, sessionId);
+
+  const maxAliases = getTranscriptAliasesPerSessionLimit();
+  while (aliases.size > maxAliases) {
+    const oldestKey = aliases.values().next().value;
+    aliases.delete(oldestKey);
+    transcriptIndex.delete(oldestKey);
   }
 }
 
@@ -47,7 +102,171 @@ function extractSessionIdFromMetadata(metadata) {
   );
 }
 
-export function resolveSessionId(req, requestBody) {
+function stableNormalize(value) {
+  if (value === undefined) {
+    return null;
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stableNormalize(item));
+  }
+
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) {
+    normalized[key] = stableNormalize(value[key]);
+  }
+  return normalized;
+}
+
+function normalizeContentBlocks(content) {
+  if (typeof content === 'string') {
+    return content.length > 0 ? [{ type: 'text', text: content }] : [];
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  const blocks = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') {
+      continue;
+    }
+
+    if (block.type === 'thinking') {
+      continue;
+    }
+
+    if (block.type === 'text') {
+      blocks.push({ type: 'text', text: String(block.text ?? '') });
+      continue;
+    }
+
+    if (block.type === 'tool_use') {
+      blocks.push({
+        type: 'tool_use',
+        id: normalizeId(block.id),
+        name: normalizeId(block.name),
+        input: stableNormalize(block.input ?? {}),
+      });
+      continue;
+    }
+
+    if (block.type === 'tool_result') {
+      const normalizedContent =
+        typeof block.content === 'string' || Array.isArray(block.content)
+          ? normalizeContentBlocks(block.content)
+          : stableNormalize(block.content ?? null);
+      blocks.push({
+        type: 'tool_result',
+        tool_use_id: normalizeId(block.tool_use_id),
+        is_error: block.is_error === true,
+        content: stableNormalize(normalizedContent),
+      });
+      continue;
+    }
+
+    blocks.push(stableNormalize(block));
+  }
+
+  return blocks;
+}
+
+function normalizeSystemPrompt(system) {
+  if (typeof system === 'string') {
+    const trimmed = system.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (!Array.isArray(system)) {
+    return null;
+  }
+
+  const text = system
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+    .trim();
+  return text.length > 0 ? text : null;
+}
+
+function normalizeMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return null;
+  }
+  const role = message.role === 'model' ? 'assistant' : message.role;
+  if (role !== 'user' && role !== 'assistant') {
+    return null;
+  }
+
+  return {
+    role,
+    content: normalizeContentBlocks(message.content),
+  };
+}
+
+function buildTranscriptKey(requestBody, messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return null;
+  }
+
+  const normalizedMessages = messages.map((message) => normalizeMessage(message)).filter(Boolean);
+  if (normalizedMessages.length === 0) {
+    return null;
+  }
+
+  const payload = stableNormalize({
+    version: 1,
+    model: normalizeId(requestBody?.model),
+    system: normalizeSystemPrompt(requestBody?.system),
+    messages: normalizedMessages,
+  });
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function buildContinuationLookupKey(requestBody) {
+  const messages = requestBody?.messages;
+  if (!Array.isArray(messages) || messages.length < 3) {
+    return null;
+  }
+
+  const latestMessage = normalizeMessage(messages[messages.length - 1]);
+  if (latestMessage?.role !== 'user') {
+    return null;
+  }
+
+  const prefixMessages = messages.slice(0, -1);
+  const lastPrefixMessage = normalizeMessage(prefixMessages[prefixMessages.length - 1]);
+  if (lastPrefixMessage?.role !== 'assistant') {
+    return null;
+  }
+
+  return buildTranscriptKey(requestBody, prefixMessages);
+}
+
+function resolveSessionIdFromTranscript(requestBody) {
+  const transcriptKey = buildContinuationLookupKey(requestBody);
+  if (!transcriptKey) {
+    return null;
+  }
+
+  cleanupExpiredSessions();
+  const sessionId = transcriptIndex.get(transcriptKey);
+  if (!sessionId) {
+    return null;
+  }
+  if (!sessionStore.has(sessionId)) {
+    transcriptIndex.delete(transcriptKey);
+    return null;
+  }
+
+  log.debug('Using transcript-matched session ID', {
+    sessionId: `${sessionId.slice(0, 8)}...`,
+  });
+  return sessionId;
+}
+
+export function resolveSessionId(req, requestBody, options = {}) {
   const headerSessionId =
     normalizeId(req.get('x-session-id')) || normalizeId(req.get('x-sessionid'));
   const metadataSessionId = extractSessionIdFromMetadata(requestBody?.metadata);
@@ -56,6 +275,13 @@ export function resolveSessionId(req, requestBody) {
   if (explicitSessionId) {
     log.debug('Using provided session ID', { sessionId: `${explicitSessionId.slice(0, 8)}...` });
     return { sessionId: explicitSessionId, isGenerated: false };
+  }
+
+  if (options.allowTranscriptMatch !== false) {
+    const transcriptSessionId = resolveSessionIdFromTranscript(requestBody);
+    if (transcriptSessionId) {
+      return { sessionId: transcriptSessionId, isGenerated: false };
+    }
   }
 
   const newSessionId = uuidv4();
@@ -146,6 +372,35 @@ export function updateConversationState(sessionId, state) {
   });
 }
 
+export function rememberConversationTurn(sessionId, requestBody, assistantMessage) {
+  const normalizedSessionId = normalizeId(sessionId);
+  const requestMessages = requestBody?.messages;
+  if (!normalizedSessionId || !Array.isArray(requestMessages) || !assistantMessage) {
+    return;
+  }
+
+  cleanupExpiredSessions();
+  if (!sessionStore.has(normalizedSessionId)) {
+    return;
+  }
+
+  const normalizedAssistant = normalizeMessage(assistantMessage);
+  if (!normalizedAssistant || normalizedAssistant.role !== 'assistant') {
+    return;
+  }
+
+  const transcriptKey = buildTranscriptKey(requestBody, [...requestMessages, normalizedAssistant]);
+  if (!transcriptKey) {
+    return;
+  }
+
+  indexTranscriptAlias(normalizedSessionId, transcriptKey);
+  log.debug('Indexed transcript for session continuity', {
+    sessionId: `${normalizedSessionId.slice(0, 8)}...`,
+    transcriptAliases: transcriptIndex.size,
+  });
+}
+
 export function resetConversationState(sessionId) {
   const normalizedSessionId = normalizeId(sessionId);
   if (!normalizedSessionId) {
@@ -153,7 +408,14 @@ export function resetConversationState(sessionId) {
   }
   const existed = sessionStore.has(normalizedSessionId);
   sessionStore.delete(normalizedSessionId);
+  removeTranscriptAliasesForSession(normalizedSessionId);
   if (existed) {
     log.info('Reset conversation state', { sessionId: `${normalizedSessionId.slice(0, 8)}...` });
   }
+}
+
+export function clearConversationStoreForTests() {
+  sessionStore.clear();
+  transcriptIndex.clear();
+  transcriptAliasesBySession.clear();
 }

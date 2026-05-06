@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HopGPTClient } from '../../src/services/hopgptClient.js';
 import * as tlsClient from '../../src/services/tlsClient.js';
 
@@ -7,7 +7,7 @@ function createMockTLSResponse({
   status = 200,
   statusText = 'OK',
   body = '',
-  headers = {}
+  headers = {},
 } = {}) {
   return {
     ok,
@@ -16,7 +16,7 @@ function createMockTLSResponse({
     body,
     headers,
     text: async () => body,
-    json: async () => JSON.parse(body || '{}')
+    json: async () => JSON.parse(body || '{}'),
   };
 }
 
@@ -29,7 +29,7 @@ function newClient(overrides = {}) {
     userAgent: 'Mozilla/5.0 Firefox/150.0',
     autoPersist: false,
     autoRefresh: false,
-    ...overrides
+    ...overrides,
   });
 }
 
@@ -45,12 +45,14 @@ describe('HopGPTClient.startStream', () => {
   });
 
   it('returns the ack object on 2xx JSON response', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: true,
-      status: 200,
-      body: JSON.stringify({ streamId: 'abc-123', conversationId: 'conv-1', status: 'started' }),
-      headers: { 'content-type': 'application/json' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: JSON.stringify({ streamId: 'abc-123', conversationId: 'conv-1', status: 'started' }),
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
 
     const client = newClient();
     const ack = await client.startStream({ text: 'hi' });
@@ -59,11 +61,14 @@ describe('HopGPTClient.startStream', () => {
   });
 
   it('sends the correct method, URL, body, and headers', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: true, status: 200,
-      body: JSON.stringify({ streamId: 's', conversationId: 'c', status: 'started' }),
-      headers: { 'content-type': 'application/json' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: JSON.stringify({ streamId: 's', conversationId: 'c', status: 'started' }),
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
 
     const client = newClient();
     await client.startStream({ text: 'hello' });
@@ -82,61 +87,80 @@ describe('HopGPTClient.startStream', () => {
   });
 
   it('throws HopGPTError(401) on 401 response', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: false, status: 401, statusText: 'Unauthorized',
-      body: 'nope'
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        body: 'nope',
+      }),
+    );
     const client = newClient();
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({
       name: 'HopGPTError',
-      statusCode: 401
+      statusCode: 401,
     });
   });
 
   it('throws HopGPTError(403) on 403 response', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({ ok: false, status: 403, statusText: 'Forbidden', body: '' }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({ ok: false, status: 403, statusText: 'Forbidden', body: '' }),
+    );
     const client = newClient();
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({ statusCode: 403 });
   });
 
   it('throws HopGPTError(429) on 429 response', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: false, status: 429, statusText: 'Too Many Requests', body: 'slow down',
-      headers: { 'retry-after': '2' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        body: 'slow down',
+        headers: { 'retry-after': '2' },
+      }),
+    );
     const client = newClient();
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({ statusCode: 429 });
   });
 
   it('throws HopGPTError(500) on 500 response', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({ ok: false, status: 500, statusText: 'Server Error', body: 'oops' }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({ ok: false, status: 500, statusText: 'Server Error', body: 'oops' }),
+    );
     const client = newClient();
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it('throws HopGPTError(502, /Malformed stream ack/) on non-JSON 2xx body', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: true, status: 200,
-      body: '<html><title>Please log in</title></html>',
-      headers: { 'content-type': 'text/html' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: '<html><title>Please log in</title></html>',
+        headers: { 'content-type': 'text/html' },
+      }),
+    );
     const client = newClient();
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({
       statusCode: 502,
-      message: expect.stringMatching(/Malformed stream ack/)
+      message: expect.stringMatching(/Malformed stream ack/),
     });
   });
 
   it('throws HopGPTError(502, /Malformed stream ack/) on JSON 2xx missing streamId', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: true, status: 200,
-      body: JSON.stringify({ conversationId: 'c', status: 'started' }),
-      headers: { 'content-type': 'application/json' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: JSON.stringify({ conversationId: 'c', status: 'started' }),
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
     const client = newClient();
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({
       statusCode: 502,
-      message: expect.stringMatching(/Malformed stream ack/)
+      message: expect.stringMatching(/Malformed stream ack/),
     });
   });
 
@@ -144,8 +168,9 @@ describe('HopGPTClient.startStream', () => {
     const controller = new AbortController();
     controller.abort();
     const client = newClient();
-    await expect(client.startStream({ text: 'hi' }, { signal: controller.signal }))
-      .rejects.toThrow(/Request aborted/);
+    await expect(client.startStream({ text: 'hi' }, { signal: controller.signal })).rejects.toThrow(
+      /Request aborted/,
+    );
     expect(tlsFetchSpy).not.toHaveBeenCalled();
   });
 
@@ -156,7 +181,9 @@ describe('HopGPTClient.startStream', () => {
   });
 
   it('does not call refreshTokens even with autoRefresh:true and a 401 response', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({ ok: false, status: 401, statusText: 'Unauthorized', body: '' }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({ ok: false, status: 401, statusText: 'Unauthorized', body: '' }),
+    );
     const client = newClient({ autoRefresh: true });
     const refreshSpy = vi.spyOn(client, 'refreshTokens');
     await expect(client.startStream({ text: 'hi' })).rejects.toMatchObject({ statusCode: 401 });
@@ -179,13 +206,17 @@ describe('HopGPTClient.subscribeStream', () => {
     vi.restoreAllMocks();
   });
 
-  function makeFetchSSEResponse({ status = 200, contentType = 'text/event-stream', body = 'event: message\ndata: {}\n\n' } = {}) {
+  function makeFetchSSEResponse({
+    status = 200,
+    contentType = 'text/event-stream',
+    body = 'event: message\ndata: {}\n\n',
+  } = {}) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(encoder.encode(body));
         controller.close();
-      }
+      },
     });
     const headers = new Map();
     headers.set('content-type', contentType);
@@ -196,12 +227,14 @@ describe('HopGPTClient.subscribeStream', () => {
       headers: { get: (k) => headers.get(k.toLowerCase()) || null },
       body: stream,
       text: async () => body,
-      json: async () => JSON.parse(body)
+      json: async () => JSON.parse(body),
     };
   }
 
   it('returns a fetch-like response with a ReadableStream body on happy path (fetch transport)', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ body: 'event: message\ndata: {"final":true}\n\n' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ body: 'event: message\ndata: {"final":true}\n\n' }),
+    );
     const client = newClient();
     const response = await client.subscribeStream('abc');
     expect(response.ok).toBe(true);
@@ -213,11 +246,14 @@ describe('HopGPTClient.subscribeStream', () => {
   });
 
   it('uses tlsFetch when streamingTransport is "tls"', async () => {
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: true, status: 200,
-      body: 'event: message\ndata: {"final":true}\n\n',
-      headers: { 'content-type': 'text/event-stream' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: 'event: message\ndata: {"final":true}\n\n',
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
     const client = newClient({ streamingTransport: 'tls' });
     const response = await client.subscribeStream('abc');
     expect(tlsFetchSpy).toHaveBeenCalledTimes(1);
@@ -227,11 +263,14 @@ describe('HopGPTClient.subscribeStream', () => {
 
   it('falls back to tlsFetch on generic fetch failure', async () => {
     fetchSpy.mockRejectedValue(new Error('ECONNRESET'));
-    tlsFetchSpy.mockResolvedValue(createMockTLSResponse({
-      ok: true, status: 200,
-      body: 'event: message\ndata: {"final":true}\n\n',
-      headers: { 'content-type': 'text/event-stream' }
-    }));
+    tlsFetchSpy.mockResolvedValue(
+      createMockTLSResponse({
+        ok: true,
+        status: 200,
+        body: 'event: message\ndata: {"final":true}\n\n',
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
     const client = newClient();
     const response = await client.subscribeStream('abc');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -273,44 +312,56 @@ describe('HopGPTClient.subscribeStream', () => {
   });
 
   it('throws HopGPTError(401) on 401 response', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ status: 401, contentType: 'text/plain', body: 'nope' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ status: 401, contentType: 'text/plain', body: 'nope' }),
+    );
     const client = newClient();
     await expect(client.subscribeStream('abc')).rejects.toMatchObject({ statusCode: 401 });
   });
 
   it('throws HopGPTError(403) on 403 response', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ status: 403, contentType: 'text/plain', body: '' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ status: 403, contentType: 'text/plain', body: '' }),
+    );
     const client = newClient();
     await expect(client.subscribeStream('abc')).rejects.toMatchObject({ statusCode: 403 });
   });
 
   it('throws HopGPTError(429) on 429 response', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ status: 429, contentType: 'text/plain', body: 'slow' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ status: 429, contentType: 'text/plain', body: 'slow' }),
+    );
     const client = newClient();
     await expect(client.subscribeStream('abc')).rejects.toMatchObject({ statusCode: 429 });
   });
 
   it('throws HopGPTError(500) on 500 response', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ status: 500, contentType: 'text/plain', body: '' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ status: 500, contentType: 'text/plain', body: '' }),
+    );
     const client = newClient();
     await expect(client.subscribeStream('abc')).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it('throws HopGPTError(502, /Expected text\\/event-stream/) on 200 + text/html', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ contentType: 'text/html', body: '<html>login</html>' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ contentType: 'text/html', body: '<html>login</html>' }),
+    );
     const client = newClient();
     await expect(client.subscribeStream('abc')).rejects.toMatchObject({
       statusCode: 502,
-      message: expect.stringMatching(/Expected text\/event-stream/)
+      message: expect.stringMatching(/Expected text\/event-stream/),
     });
   });
 
   it('throws HopGPTError(502) on 200 + application/json', async () => {
-    fetchSpy.mockResolvedValue(makeFetchSSEResponse({ contentType: 'application/json', body: '{}' }));
+    fetchSpy.mockResolvedValue(
+      makeFetchSSEResponse({ contentType: 'application/json', body: '{}' }),
+    );
     const client = newClient();
     await expect(client.subscribeStream('abc')).rejects.toMatchObject({
       statusCode: 502,
-      message: expect.stringMatching(/Expected text\/event-stream/)
+      message: expect.stringMatching(/Expected text\/event-stream/),
     });
   });
 
@@ -326,8 +377,9 @@ describe('HopGPTClient.subscribeStream', () => {
     const controller = new AbortController();
     controller.abort();
     const client = newClient();
-    await expect(client.subscribeStream('abc', { signal: controller.signal }))
-      .rejects.toThrow(/Request aborted/);
+    await expect(client.subscribeStream('abc', { signal: controller.signal })).rejects.toThrow(
+      /Request aborted/,
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(tlsFetchSpy).not.toHaveBeenCalled();
   });

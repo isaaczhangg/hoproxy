@@ -3,6 +3,7 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RefreshTokenExpiredError } from '../../src/errors/authErrors.js';
 import messagesRouter from '../../src/routes/messages.js';
+import { clearConversationStoreForTests } from '../../src/services/conversationStore.js';
 import * as hopgptClientModule from '../../src/services/hopgptClient.js';
 
 function makeSSEResponse(body, { close = true } = {}) {
@@ -42,11 +43,13 @@ describe('POST /v1/messages streaming — end-to-end', () => {
   let originalIdlePingDelay;
   let originalToolBatchIdleClose;
   beforeEach(() => {
+    clearConversationStoreForTests();
     originalIdlePingDelay = process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS;
     originalToolBatchIdleClose = process.env.HOPGPT_TOOL_BATCH_IDLE_CLOSE_MS;
     getDefaultClientSpy = vi.spyOn(hopgptClientModule, 'getDefaultClient');
   });
   afterEach(() => {
+    clearConversationStoreForTests();
     if (originalIdlePingDelay === undefined) {
       delete process.env.HOPGPT_STREAM_IDLE_PING_DELAY_MS;
     } else {
@@ -475,6 +478,110 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(res.text).toContain('\\"file_path\\":\\"src/index.js\\"');
   });
 
+  it('reuses transcript-matched HopGPT chats for tool-result continuations without explicit session ids', async () => {
+    const firstToolUse = `<tool_use id="toolu_read" name="Read">
+{"file_path":"README.md"}
+</tool_use>`;
+    const firstSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1","sender":"User","isCreatedByUser":true}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: firstToolUse }],
+          },
+        },
+      })}\n\n`;
+    const secondSSE =
+      'event: message\ndata: {"created":true,"message":{"messageId":"u2","conversationId":"c1","sender":"User","isCreatedByUser":true}}\n\n' +
+      `event: message\ndata: ${JSON.stringify({
+        event: 'on_message_delta',
+        data: {
+          delta: {
+            content: [{ type: 'text', text: 'The README says HoProxy proxies HopGPT.' }],
+          },
+        },
+      })}\n\n` +
+      'event: message\ndata: {"final":true,"conversation":{"conversationId":"c1"},"responseMessage":{"messageId":"r2","conversationId":"c1","content":[]}}\n\n';
+    const hopGPTRequests = [];
+
+    getDefaultClientSpy.mockReturnValue({
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: async (hopGPTRequest) => {
+        hopGPTRequests.push(hopGPTRequest);
+        return makeSSEResponse(hopGPTRequests.length === 1 ? firstSSE : secondSSE);
+      },
+    });
+
+    const app = buildApp();
+    await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: 'user', content: 'inspect the README' }],
+        tools: [
+          {
+            name: 'Read',
+            input_schema: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        ],
+      })
+      .expect(200);
+
+    await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        max_tokens: 128,
+        stream: true,
+        messages: [
+          { role: 'user', content: 'inspect the README' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_read',
+                name: 'Read',
+                input: { file_path: 'README.md' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_read',
+                content: '# HoProxy',
+              },
+            ],
+          },
+        ],
+        tools: [
+          {
+            name: 'Read',
+            input_schema: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        ],
+      })
+      .expect(200);
+
+    expect(hopGPTRequests[1].conversationId).toBe('c1');
+    expect(hopGPTRequests[1].text).toContain('<tool_use id="toolu_read" name="Read">');
+    expect(hopGPTRequests[1].text).toContain('<tool_result tool_use_id="toolu_read">');
+  });
+
   it('surfaces final answer text on tool-result continuations without another tool call', async () => {
     const answerText = 'The README says HoProxy exposes an Anthropic-compatible API.';
     const harSSE =
@@ -637,7 +744,7 @@ describe('POST /v1/messages streaming — end-to-end', () => {
     expect(hopGPTRequests[1].parentMessageId).not.toBe('u1');
   });
 
-  it('does not reuse generated fallback sessions across clients without an explicit session id', async () => {
+  it('reuses transcript-matched sessions when clients omit the generated session id', async () => {
     const firstSSE =
       'event: message\ndata: {"created":true,"message":{"messageId":"u1","conversationId":"c1"}}\n\n' +
       'event: message\ndata: {"event":"on_message_delta","data":{"delta":{"content":[{"type":"text","text":"Hi"}]}}}\n\n' +
@@ -681,10 +788,9 @@ describe('POST /v1/messages streaming — end-to-end', () => {
       })
       .expect(200);
 
-    expect(hopGPTRequests[1].parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
-    expect(hopGPTRequests[1].text).toContain('Human: hi');
-    expect(hopGPTRequests[1].text).toContain('Assistant: Hi');
-    expect(hopGPTRequests[1].text).toContain('Human: again');
+    expect(hopGPTRequests[1].conversationId).toBe('c1');
+    expect(hopGPTRequests[1].parentMessageId).toBe('r1');
+    expect(hopGPTRequests[1].text).toBe('again');
   });
 
   // Regression: a pre-stream failure (expired creds, CF block, network error)

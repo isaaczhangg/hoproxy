@@ -10,12 +10,12 @@ export function createSseResponse(bodyText) {
     start(controller) {
       controller.enqueue(encoder.encode(bodyText));
       controller.close();
-    }
+    },
   });
   return new Response(stream, {
     headers: {
-      'Content-Type': 'text/event-stream'
-    }
+      'Content-Type': 'text/event-stream',
+    },
   });
 }
 

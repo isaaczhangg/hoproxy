@@ -7,10 +7,10 @@ const mockTools = [
     input_schema: {
       type: 'object',
       properties: {
-        arg: { type: 'string' }
-      }
-    }
-  }
+        arg: { type: 'string' },
+      },
+    },
+  },
 ];
 
 const transformed = transformTools(mockTools);

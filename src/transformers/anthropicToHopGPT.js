@@ -917,6 +917,7 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
     text = text + toolInjection;
   }
 
+  const conversationId = conversationState?.conversationId || conversationState?.conversation_id;
   const parentMessageId =
     conversationState?.lastAssistantMessageId || '00000000-0000-0000-0000-000000000000';
 
@@ -948,6 +949,10 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
       mcp: [],
     },
   };
+
+  if (conversationId) {
+    hopGPTRequest.conversationId = conversationId;
+  }
 
   if (images.length > 0) {
     hopGPTRequest.image_urls = images;

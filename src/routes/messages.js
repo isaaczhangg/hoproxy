@@ -8,6 +8,7 @@ import {
 } from '../errors/authErrors.js';
 import {
   getConversationState,
+  rememberConversationTurn,
   resetConversationState,
   resolveSessionId,
   shouldResetConversation,
@@ -81,10 +82,12 @@ router.post('/messages', async (req, res) => {
       log.warn(`Unmapped model "${anthropicRequest.model}", using as-is`);
     }
 
-    const { sessionId } = resolveSessionId(req, anthropicRequest);
+    const resetRequested = shouldResetConversation(req, anthropicRequest);
+    const { sessionId } = resolveSessionId(req, anthropicRequest, {
+      allowTranscriptMatch: !resetRequested,
+    });
     res.setHeader('X-Session-Id', sessionId);
 
-    const resetRequested = shouldResetConversation(req, anthropicRequest);
     if (resetRequested) {
       resetConversationState(sessionId);
     }
@@ -168,16 +171,39 @@ router.post('/messages', async (req, res) => {
     const transformer = new HopGPTToAnthropicTransformer(responseModel, transformerOptions);
 
     if (isStreaming) {
-      await handleStreamingRequest(client, hopGPTRequest, transformer, res, req, sessionId);
+      await handleStreamingRequest(
+        client,
+        hopGPTRequest,
+        transformer,
+        res,
+        req,
+        sessionId,
+        anthropicRequest,
+      );
     } else {
-      await handleNonStreamingRequest(client, hopGPTRequest, transformer, res, sessionId);
+      await handleNonStreamingRequest(
+        client,
+        hopGPTRequest,
+        transformer,
+        res,
+        sessionId,
+        anthropicRequest,
+      );
     }
   } catch (error) {
     handleError(error, res);
   }
 });
 
-async function handleStreamingRequest(client, hopGPTRequest, transformer, res, _req, sessionId) {
+async function handleStreamingRequest(
+  client,
+  hopGPTRequest,
+  transformer,
+  res,
+  _req,
+  sessionId,
+  anthropicRequest,
+) {
   // Stage SSE headers but do NOT flush them yet. If sendMessage() throws before
   // any HopGPT byte arrives (expired creds, Cloudflare block, network error),
   // headers stay unsent so handleError() can return a proper HTTP 4xx/5xx JSON
@@ -288,10 +314,7 @@ async function handleStreamingRequest(client, hopGPTRequest, transformer, res, _
     }
 
     // Update state before ending the response so fast follow-up requests see it.
-    const nextState = transformer.getConversationState();
-    if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
-      updateConversationState(sessionId, nextState);
-    }
+    persistConversationTurn(sessionId, anthropicRequest, transformer);
 
     if (!clientDisconnected && !res.writableEnded) {
       res.end();
@@ -343,7 +366,14 @@ function writeSSEEvents(res, events) {
   }
 }
 
-async function handleNonStreamingRequest(client, hopGPTRequest, transformer, res, sessionId) {
+async function handleNonStreamingRequest(
+  client,
+  hopGPTRequest,
+  transformer,
+  res,
+  sessionId,
+  anthropicRequest,
+) {
   log.debug('Starting non-streaming response', {
     sessionId: `${sessionId.slice(0, 8)}...`,
   });
@@ -361,14 +391,22 @@ async function handleNonStreamingRequest(client, hopGPTRequest, transformer, res
     throw new HopGPTError(502, 'Stream ended without final event', null);
   }
 
+  const response = transformer.buildNonStreamingResponse();
   // Update state before sending the response so fast follow-up requests see it.
+  persistConversationTurn(sessionId, anthropicRequest, transformer, response);
+  res.json(response);
+}
+
+function persistConversationTurn(sessionId, anthropicRequest, transformer, response = null) {
   const nextState = transformer.getConversationState();
   if (nextState?.lastAssistantMessageId || nextState?.conversationId || nextState?.systemPrompt) {
     updateConversationState(sessionId, nextState);
+    const assistantContent = response?.content || transformer.getAssistantContentBlocks();
+    rememberConversationTurn(sessionId, anthropicRequest, {
+      role: 'assistant',
+      content: assistantContent || [],
+    });
   }
-
-  const response = transformer.buildNonStreamingResponse();
-  res.json(response);
 }
 
 function validateRequest(request) {

@@ -1,4 +1,3 @@
-
 import { HopGPTToAnthropicTransformer } from '../src/transformers/hopGPTToAnthropic.js';
 
 // Mock process.env
@@ -6,7 +5,7 @@ process.env.HOPGPT_DEBUG = 'true';
 
 async function testTransformer() {
   const transformer = new HopGPTToAnthropicTransformer('claude-opus-4.5', {
-    mcpPassthrough: false
+    mcpPassthrough: false,
   });
 
   // Simulate usage of the transformer with chunks
@@ -20,11 +19,11 @@ async function testTransformer() {
       message: {
         id: 'msg_123',
         role: 'assistant',
-        content: []
-      }
-    })
+        content: [],
+      },
+    }),
   };
-  
+
   console.log('--- Transform Start ---');
   const startResult = transformer.transformEvent(startEvent);
   console.log('Start Result:', JSON.stringify(startResult, null, 2));
@@ -35,7 +34,7 @@ async function testTransformer() {
     '<tool_',
     'call>\n',
     '{"name": "Glob", "parameters": {"pattern": "**/*"}}\n',
-    '</tool_call>'
+    '</tool_call>',
   ];
 
   for (const chunk of chunks) {
@@ -45,16 +44,16 @@ async function testTransformer() {
         event: 'on_message_delta',
         data: {
           delta: {
-            content: [{ type: 'text', text: chunk }]
-          }
-        }
-      })
+            content: [{ type: 'text', text: chunk }],
+          },
+        },
+      }),
     };
 
     console.log(`--- Processing chunk: ${JSON.stringify(chunk)} ---`);
     const result = transformer.transformEvent(event);
     if (result) {
-       console.log('Result:', JSON.stringify(result, null, 2));
+      console.log('Result:', JSON.stringify(result, null, 2));
     }
   }
 }

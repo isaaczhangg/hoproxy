@@ -91,6 +91,21 @@ describe('GET /token-status', () => {
     expect(res.body.session).toEqual({ present: true });
   });
 
+  it('reports session refresh when both session and legacy refreshToken exist', async () => {
+    getDefaultClient.mockReturnValue({
+      bearerToken: 'bearer',
+      cookies: { connect_sid: 'sid', refreshToken: 'stale-refresh', openid_user_id: 'oid' },
+      autoRefresh: true,
+    });
+
+    const app = createApp();
+    const res = await request(app).get('/token-status');
+
+    expect(res.status).toBe(200);
+    expect(res.body.refreshCredential.present).toBe(true);
+    expect(res.body.refreshCredential.kind).toBe('session');
+  });
+
   it('refreshCredential.present is false when refresh credentials are unset', async () => {
     getDefaultClient.mockReturnValue({
       bearerToken: null,

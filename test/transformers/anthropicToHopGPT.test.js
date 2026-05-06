@@ -74,10 +74,12 @@ describe('anthropicToHopGPT transformers', () => {
     };
 
     const result = transformAnthropicToHopGPT(request, {
+      conversationId: 'conversation-1',
       lastAssistantMessageId: 'assistant-1',
       systemPrompt: 'System A',
     });
 
+    expect(result.conversationId).toBe('conversation-1');
     expect(result.parentMessageId).toBe('assistant-1');
     expect(result.text).toBe('Latest');
   });

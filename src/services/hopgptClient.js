@@ -182,22 +182,25 @@ export class HopGPTClient {
   }
 
   hasRefreshCredential() {
-    return Boolean(
-      this.cookies.refreshToken || (this.cookies.connect_sid && this.cookies.openid_user_id),
-    );
+    return Boolean(this.hasSessionRefreshCredential() || this.cookies.refreshToken);
+  }
+
+  hasSessionRefreshCredential() {
+    return Boolean(this.cookies.connect_sid && this.cookies.openid_user_id);
   }
 
   getRefreshCredentialKind() {
+    if (this.hasSessionRefreshCredential()) {
+      return 'session';
+    }
     if (this.cookies.refreshToken) {
       return 'refreshToken';
-    }
-    if (this.cookies.connect_sid && this.cookies.openid_user_id) {
-      return 'session';
     }
     return 'none';
   }
 
-  buildCookieHeader() {
+  buildCookieHeader(options = {}) {
+    const { includeLegacyRefreshToken = true } = options;
     const cookies = [];
 
     if (this.cookies.cf_clearance) {
@@ -212,7 +215,7 @@ export class HopGPTClient {
     if (this.cookies.token_provider) {
       cookies.push(`token_provider=${this.cookies.token_provider}`);
     }
-    if (this.cookies.refreshToken) {
+    if (includeLegacyRefreshToken && this.cookies.refreshToken) {
       cookies.push(`refreshToken=${this.cookies.refreshToken}`);
     }
     if (this.cookies.openid_user_id) {
@@ -477,7 +480,9 @@ export class HopGPTClient {
         Referer: `${this.baseURL}/`,
       };
 
-      const cookieHeader = this.buildCookieHeader();
+      const cookieHeader = this.buildCookieHeader({
+        includeLegacyRefreshToken: !this.hasSessionRefreshCredential(),
+      });
       if (cookieHeader) {
         headers.Cookie = cookieHeader;
       }
