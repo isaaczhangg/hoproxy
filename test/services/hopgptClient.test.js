@@ -1,6 +1,6 @@
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CloudflareBlockedError,
@@ -171,7 +171,7 @@ describe('HopGPTClient', () => {
       expect(refreshCall.headers.Cookie).not.toContain('refreshToken=');
     });
 
-    it('prefers session cookies over a stale legacy refreshToken', async () => {
+    it('sends refreshToken with session cookies so OpenID refresh can fall back to it', async () => {
       const refreshResponse = createMockTLSResponse({
         ok: true,
         status: 200,
@@ -183,7 +183,7 @@ describe('HopGPTClient', () => {
       const client = new HopGPTClient({
         baseURL: 'https://example.com',
         connectSid: 'session-id',
-        refreshToken: 'stale-refresh-token',
+        refreshToken: 'refresh-token',
         openidUserId: 'openid-id',
         autoPersist: false,
       });
@@ -195,10 +195,10 @@ describe('HopGPTClient', () => {
       const [[refreshCall]] = tlsFetchSpy.mock.calls;
       expect(refreshCall.headers.Cookie).toContain('connect.sid=session-id');
       expect(refreshCall.headers.Cookie).toContain('openid_user_id=openid-id');
-      expect(refreshCall.headers.Cookie).not.toContain('refreshToken=stale-refresh-token');
+      expect(refreshCall.headers.Cookie).toContain('refreshToken=refresh-token');
     });
 
-    it('uses the legacy refreshToken when session cookies are unavailable', async () => {
+    it('uses the refreshToken cookie when session cookies are unavailable', async () => {
       const refreshResponse = createMockTLSResponse({
         ok: true,
         status: 200,

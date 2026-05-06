@@ -60,9 +60,9 @@ export class HopGPTClient {
       cf_clearance: configOrEnv(config.cfClearance, process.env.HOPGPT_COOKIE_CF_CLEARANCE),
       connect_sid: configOrEnv(config.connectSid, process.env.HOPGPT_COOKIE_CONNECT_SID),
       __cf_bm: configOrEnv(config.cfBm, process.env.HOPGPT_COOKIE_CF_BM),
-      // HopGPT's OpenID refresh path normally reads server-side session tokens
-      // via connect.sid. Keep refreshToken as a legacy fallback when older
-      // deployments still provide it.
+      // HopGPT's OpenID refresh path normally reads server-side tokens via
+      // connect.sid, then falls back to the refreshToken cookie when the
+      // session no longer has those tokens.
       refreshToken,
       openid_user_id: openidUserId,
       token_provider: resolveTokenProvider(config.tokenProvider, openidUserId),
@@ -199,8 +199,7 @@ export class HopGPTClient {
     return 'none';
   }
 
-  buildCookieHeader(options = {}) {
-    const { includeLegacyRefreshToken = true } = options;
+  buildCookieHeader() {
     const cookies = [];
 
     if (this.cookies.cf_clearance) {
@@ -215,7 +214,7 @@ export class HopGPTClient {
     if (this.cookies.token_provider) {
       cookies.push(`token_provider=${this.cookies.token_provider}`);
     }
-    if (includeLegacyRefreshToken && this.cookies.refreshToken) {
+    if (this.cookies.refreshToken) {
       cookies.push(`refreshToken=${this.cookies.refreshToken}`);
     }
     if (this.cookies.openid_user_id) {
@@ -480,9 +479,7 @@ export class HopGPTClient {
         Referer: `${this.baseURL}/`,
       };
 
-      const cookieHeader = this.buildCookieHeader({
-        includeLegacyRefreshToken: !this.hasSessionRefreshCredential(),
-      });
+      const cookieHeader = this.buildCookieHeader();
       if (cookieHeader) {
         headers.Cookie = cookieHeader;
       }

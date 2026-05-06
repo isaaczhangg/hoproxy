@@ -119,8 +119,8 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 | `PORT`                                      | `3001`      | Server port.                                                                                                        |
 | `HOPGPT_COOKIE_CONNECT_SID`                 | —           | **Required for current HopGPT sessions.** Express session cookie used to mint bearer tokens.                         |
 | `HOPGPT_COOKIE_OPENID_USER_ID`              | —           | **Required with `connect.sid`.** OpenID user cookie kept with the browser cookie context and rotated on refresh.      |
-| `HOPGPT_COOKIE_REFRESH_TOKEN`               | —           | Legacy HopGPT refresh-token cookie. Used when an older HopGPT deployment still sets it.                              |
-| `HOPGPT_BEARER_TOKEN`                       | —           | JWT bearer; auto-minted from session cookies or legacy `refreshToken` if missing.                                    |
+| `HOPGPT_COOKIE_REFRESH_TOKEN`               | —           | HopGPT refresh-token cookie. Sent with session cookies so OpenID refresh can fall back to it until it expires.        |
+| `HOPGPT_BEARER_TOKEN`                       | —           | JWT bearer; auto-minted from session cookies and `refreshToken` if missing or near expiry.                           |
 | `HOPGPT_COOKIE_CF_CLEARANCE`                | —           | Cloudflare clearance cookie.                                                                                         |
 | `HOPGPT_COOKIE_CF_BM`                       | —           | Cloudflare bot management cookie.                                                                                    |
 | `HOPGPT_COOKIE_TOKEN_PROVIDER`              | `openid`    | Token provider for HopGPT's OIDC refresh path.                                                                        |
@@ -140,7 +140,7 @@ When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 befo
 
 Extraction-only: `HOPGPT_PUPPETEER_CHANNEL`, `HOPGPT_PUPPETEER_USER_DATA_DIR`.
 
-With auto-refresh on, the normal minimum is `HOPGPT_COOKIE_CONNECT_SID` plus `HOPGPT_COOKIE_OPENID_USER_ID`. `HOPGPT_COOKIE_REFRESH_TOKEN` is still supported when HopGPT provides that legacy cookie, but current sessions may not set it.
+With auto-refresh on, the normal minimum is `HOPGPT_COOKIE_CONNECT_SID` plus `HOPGPT_COOKIE_OPENID_USER_ID`. When HopGPT also provides `HOPGPT_COOKIE_REFRESH_TOKEN`, HoProxy sends it with refresh requests so bearer tokens can continue renewing after the server-side OpenID session token cache is no longer available.
 
 ### Authentication
 
@@ -148,9 +148,9 @@ HoProxy handles two refresh scopes:
 
 - **Bearer token** (~75 min lifespan). Auto-refreshed before expiry by calling HopGPT's `/api/auth/refresh` with the same empty-body request shape the browser uses; if HopGPT still returns 401/403, HoProxy refreshes once and retries the failed request phase.
 - **Browser session cookies** (`connect.sid` plus `openid_user_id`). Current HopGPT sessions use this browser cookie context to mint bearer tokens. When either cookie expires or is rejected, run `npm run extract` to re-authenticate.
-- **Legacy `refreshToken`**. Older HopGPT deployments may still set this cookie; HoProxy only uses it when session cookies are unavailable, so stale legacy tokens do not override the current `connect.sid` refresh path.
+- **`refreshToken` cookie**. OpenID refresh first uses the server-side session behind `connect.sid`, then falls back to this cookie when present. That fallback is what should keep bearer tokens renewing until the refresh token expires, commonly around a week.
 
-During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `connect.sid`, `openid_user_id`, optional legacy `refreshToken`, and `token_provider` cookies can rotate server-side on refresh and are tracked together; Cloudflare cookies are best-effort and may need re-extraction on blocks.
+During extraction, HoProxy validates the browser session by making a real in-browser refresh before writing `.env`. The `connect.sid`, `openid_user_id`, optional `refreshToken`, and `token_provider` cookies can rotate server-side on refresh and are tracked together; Cloudflare cookies are best-effort and may need re-extraction on blocks.
 
 ### Conversation state
 
