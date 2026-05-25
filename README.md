@@ -40,6 +40,86 @@ Restart Claude Code. HoProxy ignores the auth token, but Claude Code requires a 
 
 Point OpenCode at `http://localhost:3001` as an Anthropic-compatible provider. HoProxy handles OpenCode's tool-use flow out of the box — it injects tool definitions into the prompt, parses the model's XML tool calls, and returns standard Anthropic `tool_use` blocks. Tool streams are closed as soon as a complete tool-call batch is emitted, or after a short idle window once a tool call has streamed, so OpenCode can run tools immediately instead of waiting for HopGPT to finish extra narration. If your client parses XML tool calls directly from the text stream instead, see [Appendix B: MCP passthrough mode](#appendix-b-mcp-passthrough-mode).
 
+### Pi Agent
+
+Register HoProxy as a Pi custom provider in `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "hoproxy": {
+      "baseUrl": "http://localhost:3001",
+      "api": "anthropic-messages",
+      "apiKey": "dummy",
+      "compat": {
+        "supportsEagerToolInputStreaming": false,
+        "supportsLongCacheRetention": false,
+        "supportsCacheControlOnTools": false
+      },
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "name": "HoProxy GPT 5.5",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": "xhigh"
+          },
+          "compat": {
+            "forceAdaptiveThinking": true
+          },
+          "input": ["text", "image"],
+          "contextWindow": 400000,
+          "maxTokens": 128000
+        },
+        {
+          "id": "claude-opus-4-5",
+          "name": "HoProxy Claude Opus 4.5",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": null,
+            "xhigh": "max"
+          },
+          "input": ["text", "image"],
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        }
+      ]
+    }
+  }
+}
+```
+
+Then set Pi's project defaults in `.pi/settings.json`:
+
+```json
+{
+  "defaultProvider": "hoproxy",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "xhigh",
+  "thinkingBudgets": {
+    "high": 32000
+  }
+}
+```
+
+Start HoProxy with `npm start`, then run `pi` from the project directory. HoProxy ignores the dummy API key; Pi only needs a non-empty provider credential so it can send Anthropic Messages requests to the local proxy.
+
+This exposes only GPT 5.5 with Pi `xhigh` thinking and Claude Opus 4.5 with Pi `xhigh` mapped to the deepest supported budget-style thinking. A quick smoke test is:
+
+```bash
+pi --provider hoproxy --model gpt-5.5 --thinking xhigh --no-tools --no-session -p "Reply with exactly: HoProxy Pi test OK"
+pi --provider hoproxy --model claude-opus-4-5 --thinking xhigh --no-tools --no-session -p "Reply with exactly: HoProxy Pi test OK"
+```
+
 ### Anthropic SDK
 
 Python:

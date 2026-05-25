@@ -103,9 +103,16 @@ router.post('/messages', async (req, res) => {
 
     const hopGPTRequest = transformAnthropicToHopGPT(anthropicRequest, conversationState);
     hopGPTRequest.model = modelMapping.hopgptModel || strippedModel || hopGPTRequest.model;
+    if (modelMapping.hopgptEndpoint) {
+      hopGPTRequest.endpoint = modelMapping.hopgptEndpoint;
+    }
+    if (modelMapping.modelDisplayLabel) {
+      hopGPTRequest.modelDisplayLabel = modelMapping.modelDisplayLabel;
+    }
 
     log.debug('Request transformed', {
       model: hopGPTRequest.model,
+      endpoint: hopGPTRequest.endpoint,
       toolCount: hopGPTRequest.tools?.length || 0,
       streaming: anthropicRequest.stream === true,
     });
@@ -166,6 +173,7 @@ router.post('/messages', async (req, res) => {
       requested: anthropicRequest.model,
       stripped: strippedModel,
       hopgpt: modelMapping.hopgptModel,
+      endpoint: hopGPTRequest.endpoint,
       response: responseModel,
     });
 

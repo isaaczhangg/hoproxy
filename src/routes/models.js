@@ -9,6 +9,12 @@ const router = Router();
 // Anthropic's public model list and rejects synthetic thinking variants.
 const CANONICAL_MODELS = [
   {
+    id: 'gpt-5-5',
+    type: 'model',
+    created_at: '2026-01-01T00:00:00Z',
+    display_name: 'GPT 5.5',
+  },
+  {
     id: 'claude-opus-4-5',
     type: 'model',
     created_at: '2025-01-01T00:00:00Z',

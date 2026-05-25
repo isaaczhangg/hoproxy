@@ -37,6 +37,18 @@ function resolveTokenProvider(configTokenProvider, openidUserId) {
   return configuredProvider || DEFAULT_TOKEN_PROVIDER;
 }
 
+function resolveChatEndpoint(endpointName, defaultEndpoint) {
+  if (typeof endpointName !== 'string' || endpointName.trim().length === 0) {
+    return defaultEndpoint;
+  }
+
+  const trimmed = endpointName.trim();
+  if (trimmed.startsWith('/')) {
+    return trimmed;
+  }
+  return `/api/agents/chat/${encodeURIComponent(trimmed)}`;
+}
+
 function isTestRuntime() {
   const isBunTestCommand = Boolean(process.versions?.bun) && process.argv.includes('test');
   return (
@@ -92,16 +104,7 @@ export class HopGPTClient {
   }
 
   _extractRetryAfter(headers) {
-    if (!headers) {
-      return null;
-    }
-
-    let retryAfter;
-    if (typeof headers.get === 'function') {
-      retryAfter = headers.get('retry-after');
-    } else {
-      retryAfter = headers['retry-after'] || headers['Retry-After'];
-    }
+    const retryAfter = this._getHeaderValue(headers, 'retry-after');
     if (!retryAfter) {
       return null;
     }
@@ -118,6 +121,33 @@ export class HopGPTClient {
     }
 
     return null;
+  }
+
+  _getHeaderValue(headers, name) {
+    if (!headers) {
+      return '';
+    }
+
+    let value;
+    if (typeof headers.get === 'function') {
+      value = headers.get(name);
+    } else {
+      value = headers[name] || headers[name.toLowerCase()];
+      if (value === undefined) {
+        const headerEntry = Object.entries(headers).find(
+          ([key]) => key.toLowerCase() === name.toLowerCase(),
+        );
+        value = headerEntry?.[1];
+      }
+    }
+
+    if (Array.isArray(value)) {
+      return value[0] || '';
+    }
+    if (value === undefined || value === null) {
+      return '';
+    }
+    return String(value);
   }
 
   _calculateBackoffDelay(attempt, retryAfterMs) {
@@ -683,8 +713,9 @@ export class HopGPTClient {
       headers.Cookie = cookieHeader;
     }
 
+    const endpoint = resolveChatEndpoint(hopGPTRequest.endpoint, this.endpoint);
     const response = await tlsFetch({
-      url: `${this.baseURL}${this.endpoint}`,
+      url: `${this.baseURL}${endpoint}`,
       method: 'POST',
       headers,
       body: hopGPTRequest,
@@ -790,10 +821,7 @@ export class HopGPTClient {
       );
     }
 
-    const contentType =
-      (typeof response.headers?.get === 'function'
-        ? response.headers.get('content-type')
-        : response.headers?.['content-type'] || response.headers?.['Content-Type']) || '';
+    const contentType = this._getHeaderValue(response.headers, 'content-type');
     const normalizedType = contentType.trim().toLowerCase();
     if (!normalizedType.startsWith('text/event-stream')) {
       const body = await this._readResponseText(response);

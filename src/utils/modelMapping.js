@@ -6,18 +6,31 @@ const log = loggers.model;
 // -thinking variants are accepted only as input aliases.
 const MODEL_MAPPINGS = Object.freeze([
   {
+    canonical: 'gpt-5-5',
+    hopgpt: 'gpt-5.5',
+    endpoint: 'AzureOpenAI',
+    displayLabel: 'GPT',
+    aliases: ['gpt-5.5'],
+  },
+  {
     canonical: 'claude-opus-4-5',
-    hopgpt: 'claude-opus-4.5',
-    aliases: ['claude-opus-4.5'],
+    hopgpt: 'claude-opus-4.5-cached',
+    endpoint: 'AnthropicClaude',
+    displayLabel: 'Claude',
+    aliases: ['claude-opus-4.5', 'claude-opus-4.5-cached'],
   },
   {
     canonical: 'claude-sonnet-4-5',
     hopgpt: 'claude-sonnet-4.5',
+    endpoint: 'AnthropicClaude',
+    displayLabel: 'Claude',
     aliases: ['claude-sonnet-4.5'],
   },
   {
     canonical: 'claude-haiku-4-5',
     hopgpt: 'claude-haiku-4.5',
+    endpoint: 'AnthropicClaude',
+    displayLabel: 'Claude',
     aliases: ['claude-haiku-4.5'],
   },
 ]);
@@ -92,6 +105,8 @@ export function resolveModelMapping(modelName) {
     return {
       hopgptModel: modelName,
       responseModel: modelName,
+      hopgptEndpoint: null,
+      modelDisplayLabel: null,
       mapped: false,
     };
   }
@@ -109,6 +124,8 @@ export function resolveModelMapping(modelName) {
       return {
         hopgptModel: mapping.hopgpt,
         responseModel: mapping.canonical,
+        hopgptEndpoint: mapping.endpoint,
+        modelDisplayLabel: mapping.displayLabel,
         mapped: true,
       };
     }
@@ -118,6 +135,8 @@ export function resolveModelMapping(modelName) {
   return {
     hopgptModel: strippedModel,
     responseModel: strippedModel,
+    hopgptEndpoint: null,
+    modelDisplayLabel: null,
     mapped: false,
   };
 }

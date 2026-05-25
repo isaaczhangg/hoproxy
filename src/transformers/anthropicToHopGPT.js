@@ -766,18 +766,22 @@ export function normalizeStopSequences(value) {
 }
 
 export function extractThinkingConfig(anthropicRequest) {
-  const { model, thinking } = anthropicRequest;
+  const { model, thinking, output_config } = anthropicRequest;
 
   if (thinking) {
     return {
-      enabled: thinking.type === 'enabled',
+      enabled: thinking.type === 'enabled' || thinking.type === 'adaptive',
       budgetTokens: thinking.budget_tokens || null,
+      type: thinking.type,
+      effort: typeof output_config?.effort === 'string' ? output_config.effort : null,
     };
   }
 
   return {
     enabled: isThinkingModel(model),
     budgetTokens: null,
+    type: null,
+    effort: null,
   };
 }
 
@@ -1076,7 +1080,7 @@ export function transformAnthropicToHopGPT(anthropicRequest, conversationState =
   }
 
   if (thinkingConfig.enabled) {
-    hopGPTRequest.reasoning_effort = 'high';
+    hopGPTRequest.reasoning_effort = thinkingConfig.effort || 'high';
     hopGPTRequest.reasoning_summary = 'detailed';
     if (Number.isFinite(thinkingConfig.budgetTokens) && thinkingConfig.budgetTokens > 0) {
       hopGPTRequest.thinking = {

@@ -290,6 +290,16 @@ describe('HopGPTClient', () => {
     });
   });
 
+  describe('_getHeaderValue()', () => {
+    it('normalizes array-valued TLS response headers', () => {
+      const client = new HopGPTClient({ openidUserId: 'id' });
+
+      expect(
+        client._getHeaderValue({ 'Content-Type': ['text/event-stream'] }, 'content-type'),
+      ).toBe('text/event-stream');
+    });
+  });
+
   describe('autoPersist default', () => {
     it('is disabled under Vitest to avoid overwriting a real .env file', () => {
       const client = new HopGPTClient({ openidUserId: 'id' });

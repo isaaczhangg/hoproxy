@@ -271,7 +271,12 @@ describe('anthropicToHopGPT transformers', () => {
     const request = await readFixture('anthropic-request-tools.json');
     const thinkingConfig = extractThinkingConfig(request);
 
-    expect(thinkingConfig).toEqual({ enabled: true, budgetTokens: 256 });
+    expect(thinkingConfig).toEqual({
+      enabled: true,
+      budgetTokens: 256,
+      type: 'enabled',
+      effort: null,
+    });
 
     const message = {
       role: 'assistant',
@@ -427,5 +432,20 @@ describe('anthropicToHopGPT transformers', () => {
 
     expect(result.reasoning_effort).toBe('high');
     expect(result.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 });
+  });
+
+  it('preserves adaptive thinking effort from Anthropic-compatible clients', () => {
+    const request = {
+      model: 'claude-opus-4-5',
+      max_tokens: 12000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'max' },
+      messages: [{ role: 'user', content: 'Hello' }],
+    };
+
+    const result = transformAnthropicToHopGPT(request);
+
+    expect(result.reasoning_effort).toBe('max');
+    expect(result.thinking).toBeUndefined();
   });
 });

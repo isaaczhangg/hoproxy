@@ -1,0 +1,8 @@
+{
+  "defaultProvider": "hoproxy",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "xhigh",
+  "thinkingBudgets": {
+    "high": 32000
+  }
+}
