@@ -167,13 +167,16 @@ curl http://localhost:3001/v1/messages \
 
 | Canonical ID          | Use case                                            |
 | --------------------- | --------------------------------------------------- |
+| `gpt-5.5`             | OpenAI reasoning model (HopGPT AzureOpenAI endpoint).|
 | `claude-opus-4-5`     | Highest quality; complex reasoning, long-form work. |
 | `claude-sonnet-4-5`   | Balanced speed/quality; good default.               |
 | `claude-haiku-4-5`    | Fastest; low-latency tasks.                         |
 
 The proxy also accepts dotted variants (`claude-sonnet-4.5`) and `-thinking` suffixes (`claude-sonnet-4-5-thinking`). The `-thinking` form never appears in canonical responses — thinking mode is enabled internally based on the model.
 
-HoProxy forwards Anthropic sampling controls (`temperature`, `top_p`, and `top_k`) to HopGPT when they are numeric.
+For Claude models, HoProxy forwards Anthropic sampling controls (`temperature`, `top_p`, and `top_k`) to HopGPT when they are numeric.
+
+**GPT-5.5** runs on HopGPT's AzureOpenAI endpoint, which serves a reasoning model with a fixed parameter set. HoProxy reshapes the request into the exact wire form the chat.ai.jh.edu web client sends: it strips Anthropic-style sampling controls (`temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`), the Bedrock `thinking` budget object, and `ephemeralAgent` (none of which the reasoning model accepts), and pins `reasoning_effort: "xhigh"`, `reasoning_summary: "detailed"`, `imageDetail: "high"`, and `resendFiles: false`. Omitted sampling params fall back to HopGPT's server defaults (Temperature 1.0, Top P 1.0, penalties 0, Verbosity none, Responses API off). See `src/transformers/azureOpenAIDefaults.js`.
 
 When thinking is enabled, HoProxy floors the request's `max_tokens` at 8192 before forwarding to HopGPT. HopGPT's Bedrock backend rejects requests where `max_tokens <= thinking.budget_tokens`; bumping the floor keeps the request valid regardless of the caller's budget.
 

@@ -21,6 +21,7 @@ import {
   normalizeSystemPrompt,
   transformAnthropicToHopGPT,
 } from '../transformers/anthropicToHopGPT.js';
+import { applyAzureOpenAIDefaults } from '../transformers/azureOpenAIDefaults.js';
 import { formatSSEEvent, HopGPTToAnthropicTransformer } from '../transformers/hopGPTToAnthropic.js';
 import { analyzeConversationState } from '../transformers/thinkingUtils.js';
 import { loggers } from '../utils/logger.js';
@@ -108,6 +109,13 @@ router.post('/messages', async (req, res) => {
     }
     if (modelMapping.modelDisplayLabel) {
       hopGPTRequest.modelDisplayLabel = modelMapping.modelDisplayLabel;
+    }
+
+    // GPT-5.5 runs on HopGPT's AzureOpenAI endpoint, a reasoning model with a
+    // fixed parameter set. Reshape the Claude-shaped body into the exact wire
+    // form the chat.ai.jh.edu web client sends (see azureOpenAIDefaults.js).
+    if (hopGPTRequest.endpoint === 'AzureOpenAI') {
+      applyAzureOpenAIDefaults(hopGPTRequest);
     }
 
     log.debug('Request transformed', {

@@ -79,6 +79,71 @@ describe('messages routes', () => {
     );
   });
 
+  it('normalizes GPT-5.5 requests to the AzureOpenAI web-client parameter set', async () => {
+    const mockClient = {
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: vi.fn(),
+    };
+    const finalData = await readFixture('hopgpt-response-final.json');
+    mockClient.sendMessage.mockResolvedValue(
+      createSseResponseFromEvents([{ event: 'message', data: finalData }]),
+    );
+    getDefaultClient.mockReturnValue(mockClient);
+
+    const app = createApp();
+    await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: 'Hello' }],
+        max_tokens: 8192,
+        temperature: 0.2,
+        top_p: 0.9,
+        thinking: { type: 'enabled', budget_tokens: 4096 },
+        stream: false,
+      });
+
+    const sentRequest = mockClient.sendMessage.mock.calls[0][0];
+    expect(sentRequest.endpoint).toBe('AzureOpenAI');
+    expect(sentRequest.model).toBe('gpt-5.5');
+    expect(sentRequest.modelDisplayLabel).toBe('GPT');
+    expect(sentRequest.reasoning_effort).toBe('xhigh');
+    expect(sentRequest.reasoning_summary).toBe('detailed');
+    expect(sentRequest.imageDetail).toBe('high');
+    expect(sentRequest.resendFiles).toBe(false);
+    expect(sentRequest.temperature).toBeUndefined();
+    expect(sentRequest.top_p).toBeUndefined();
+    expect(sentRequest.thinking).toBeUndefined();
+    expect(sentRequest.ephemeralAgent).toBeUndefined();
+  });
+
+  it('leaves Claude (AnthropicClaude) requests unnormalized', async () => {
+    const mockClient = {
+      validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
+      sendMessage: vi.fn(),
+    };
+    const finalData = await readFixture('hopgpt-response-final.json');
+    mockClient.sendMessage.mockResolvedValue(
+      createSseResponseFromEvents([{ event: 'message', data: finalData }]),
+    );
+    getDefaultClient.mockReturnValue(mockClient);
+
+    const app = createApp();
+    await request(app)
+      .post('/v1/messages')
+      .send({
+        model: 'claude-opus-4-5',
+        messages: [{ role: 'user', content: 'Hello' }],
+        max_tokens: 8192,
+        stream: false,
+      });
+
+    const sentRequest = mockClient.sendMessage.mock.calls[0][0];
+    expect(sentRequest.endpoint).toBe('AnthropicClaude');
+    expect(sentRequest.ephemeralAgent).toBeDefined();
+    expect(sentRequest.reasoning_effort).not.toBe('xhigh');
+  });
+
   it('preserves parallel tool calls from final-only non-streaming responses', async () => {
     const mockClient = {
       validateAuth: () => ({ valid: true, missing: [], warnings: [] }),
